@@ -780,7 +780,9 @@
   set -e
   setopt pipefail
 
-  cd /home/m4xx3d0ut/git/k1s-wt/k1s
+  : &quot;${K1S_ROOT:?set K1S_ROOT to the K1s checkout}&quot;
+  : &quot;${SSH_KEY_PATH:?set SSH_KEY_PATH to the guest SSH key}&quot;
+  cd &quot;$K1S_ROOT&quot;
   sudo -v
 
   : &quot;${HOST_A_GPU_ENV_FILE:=state/host-a-gpu.env}&quot;
@@ -872,7 +874,7 @@ PY
   ssh_opts=(
     -o StrictHostKeyChecking=no
     -o UserKnownHostsFile=/dev/null
-    -i /home/m4xx3d0ut/.ssh/id_rsa
+    -i &quot;$SSH_KEY_PATH&quot;
   )
 
   ssh &quot;${ssh_opts[@]}&quot; &quot;ae@${GUEST_IP}&quot; &quot;mkdir -p &#x27;${HOST_A_GPU_GUEST_REPO}&#x27;&quot;
@@ -887,7 +889,7 @@ PY
     --exclude &#x27;__pycache__/&#x27; \
     --exclude &#x27;.pytest_cache/&#x27; \
     --exclude &#x27;.mypy_cache/&#x27; \
-    -e &quot;ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /home/m4xx3d0ut/.ssh/id_rsa&quot; \
+    -e &quot;ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ${SSH_KEY_PATH}&quot; \
     ./ \
     &quot;ae@${GUEST_IP}:${HOST_A_GPU_GUEST_REPO}/&quot;
 
@@ -912,7 +914,8 @@ PY
 </ul>
 <h2 id="b-start-the-host-a-controller-and-leave-it-running">B) Start the Host A controller and leave it running</h2>
 <p>Run this in a separate terminal after <code>A</code> succeeds:</p>
-<pre><code>cd /home/m4xx3d0ut/git/k1s-wt/k1s
+<pre><code>: &quot;${K1S_ROOT:?set K1S_ROOT to the K1s checkout}&quot;
+cd &quot;$K1S_ROOT&quot;
 
 CONTROLLER_HOST_IP=&quot;$(
   ip route get 1.1.1.1 | awk &#x27;{
@@ -955,7 +958,9 @@ ss -ltnp | rg &#x27;:9110\\b|:7422\\b|:55432\\b&#x27;</code></pre>
   set -e
   setopt pipefail
 
-  cd /home/m4xx3d0ut/git/k1s-wt/k1s
+  : &quot;${K1S_ROOT:?set K1S_ROOT to the K1s checkout}&quot;
+  : &quot;${SSH_KEY_PATH:?set SSH_KEY_PATH to the guest SSH key}&quot;
+  cd &quot;$K1S_ROOT&quot;
 
   CONTROLLER_HOST_IP=&quot;$(
     ip route get 1.1.1.1 | awk &#x27;{
@@ -990,7 +995,7 @@ PY
   ssh_opts=(
     -o StrictHostKeyChecking=no
     -o UserKnownHostsFile=/dev/null
-    -i /home/m4xx3d0ut/.ssh/id_rsa
+    -i &quot;$SSH_KEY_PATH&quot;
   )
 
   print -r -- &quot;[node] verifying controller from host and guest&quot;
@@ -1093,7 +1098,7 @@ SH
 <p>Refresh guest IPs before reusing SSH commands:</p>
 <pre><code>scripts/lab/vm/labctl.sh host-a-gpu ips --json</code></pre>
 <p>Tail the guest node log:</p>
-<pre><code>ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i /home/m4xx3d0ut/.ssh/id_rsa ae@&lt;guest-primary-ip&gt; &#x27;tail -n 200 /home/ae/k1s-core-node.log&#x27;</code></pre>
+<pre><code>ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i &quot;$SSH_KEY_PATH&quot; ae@&lt;guest-primary-ip&gt; &#x27;tail -n 200 /home/ae/k1s-core-node.log&#x27;</code></pre>
 <p>Common causes</p>
 <ul>
 <li><code>B</code> is healthy locally, but the host firewall is still blocking guest access to <code>9110</code> or <code>55432</code></li>
@@ -1108,7 +1113,7 @@ SH
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-06-05 21:36:21</span>
+        <span>Built 2026-11-11 05:12:15</span>
       </div>
     </footer>
     <script>

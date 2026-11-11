@@ -84,15 +84,15 @@ def _fixture(root: Path) -> _Fixture:
         ),
         (
             "k1s-sdist",
-            "payload/k1s/k1s_core-1.0.0a3.tar.gz",
-            "k1s_core-1.0.0a3.tar.gz",
+            "payload/k1s/k1s_core-1.0.0.tar.gz",
+            "k1s_core-1.0.0.tar.gz",
             b"canonical-sdist",
             0o644,
         ),
         (
             "k1s-wheel",
-            "payload/k1s/k1s_core-1.0.0a3-py3-none-any.whl",
-            "k1s_core-1.0.0a3-py3-none-any.whl",
+            "payload/k1s/k1s_core-1.0.0-py3-none-any.whl",
+            "k1s_core-1.0.0-py3-none-any.whl",
             b"canonical-wheel",
             0o644,
         ),
@@ -170,7 +170,7 @@ def test_bundle_is_canonical_deterministic_and_exact_018a1(tmp_path: Path) -> No
 
     assert first.raw == second.raw
     assert first.authority == second.authority
-    assert first.manifest["distribution"] == {"name": "k1s-core", "version": "1.0.0a3"}
+    assert first.manifest["distribution"] == {"name": "k1s-core", "version": "1.0.0"}
     assert first.manifest["offlineInstall"] == {
         "indexAccess": "denied",
         "network": "denied",

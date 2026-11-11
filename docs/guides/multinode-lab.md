@@ -5,6 +5,40 @@ It focuses on a JetStream hub with lightweight edge sites and multiple gateways
 per site. For the ops-focused companion runbook, see
 `docs/ops/core-edge-manual-test.md`.
 
+## Installed package contract
+
+Install the public distribution from an approved package index or exact
+reviewed artifact, then inspect the shipped profile contracts without starting
+a runtime or preparing a host:
+
+```bash
+python -m pip install k1s-core
+k1s --help
+k1s profile list
+k1s profile doctor core
+k1s profile plan core
+k1s profile doctor edge-gateway
+k1s profile plan edge-gateway
+k1s profile doctor node
+k1s profile plan node
+```
+
+`k1s` is the primary installed package CLI. The broader `ae` command is the
+installed advanced compatibility and engineering surface. The commands above
+establish only the source-validated installed contract. They do not qualify a
+live WorkerBee channel, CRI/containerd transport, provider, deployment, or
+multi-node topology.
+
+## Contributor/development live lab
+
+The remainder of this guide is source-checkout and host-lab material. Make
+targets, `python -m ae.*`, repository scripts, and paths under `specs/`,
+`state/`, and `ops/` are not supplied as public commands by
+`pip install k1s-core`. Commands using host tools or `sudo` are separately
+managed prerequisites. Preserve these procedures for contributor validation,
+but do not treat them as installed-package or completed live-qualification
+evidence.
+
 ## Quick Navigation
 
 Podman / mixed-runtime patterns:

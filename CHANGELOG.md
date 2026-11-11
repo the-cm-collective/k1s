@@ -2,6 +2,55 @@
 
 ## Unreleased
 
+## 1.0.0 - 2026-11-11
+
+### Added
+- Published the stable `k1s-core` distribution with the `k1s`, `ae`,
+  `ae-rotate-certs`, `ae-node`, `ae-gateway`, and `ae-worker-stub` commands and
+  the established `ae` Python import compatibility surface.
+
+### Changed
+- Promoted the exact artifact, installed-package, profile-inspection, public
+  contract, and WorkerBee provider identities qualified by the RC2 train to the
+  stable `1.0.0` package identity.
+- Retained environment-specific live runtime and deployment qualification as
+  explicit operator acceptance rather than implying it from package stability.
+
+## 1.0.0rc2 - 2026-11-11
+
+### Changed
+- Advanced the qualified post-RC1 source to a distinct `1.0.0rc2` identity so
+  package and source artifacts cannot be confused with the immutable RC1
+  checkpoint.
+- Rebound the canonical artifact and isolated-Q1 candidate identities to RC2
+  while preserving RC1 as historical source and review evidence.
+
+### Documentation
+- Distinguished the installed `k1s-core` and `k1s profile` inspection path
+  from source-checkout Make targets, module invocations, repository helpers,
+  and host prerequisites without claiming live runtime qualification.
+- Recorded that the immutable local annotated `v1.0.0rc1` tag identifies the
+  prior reviewed source checkpoint but does not prove publication, deployment,
+  or live qualification.
+
+## 1.0.0rc1 - 2026-11-11
+
+### Changed
+- Promoted the exact locally reviewed alpha source identity to the `1.0.0rc1`
+  release-candidate checkpoint without declaring stable `1.0`,
+  publishing artifacts, or qualifying any deferred live boundary.
+- Rebound the canonical artifact and isolated-Q1 candidate identities to RC1
+  while preserving immutable alpha evidence and deliberately old negative
+  fixtures.
+
+### Documentation
+- Clarified that the pre-RC1 review branch and annotated marker are non-release
+  references and do not change the package version or grant publication
+  authority.
+- Distinguished the locally qualified WorkerBee v1 wire/source/synthetic
+  contract from pending live MCP acquisition, provider identity, retained W4,
+  disposable-guest runtime, deployment, and publication gates.
+
 ## 1.0.0a3 - 2026-11-10
 
 ### Fixed

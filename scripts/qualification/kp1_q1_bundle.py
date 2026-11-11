@@ -2,7 +2,7 @@
 """Build and validate the deterministic, offline K1s Q1 guest input bundle.
 
 The bundle is an uncompressed canonical USTAR archive. It contains one
-canonical manifest and the exact K1s 1.0.0a3 candidate, offline dependency
+canonical manifest and the exact K1s 1.0.0 candidate, offline dependency
 closure, installed-artifact validator, and qualification guest helper. This
 module performs no install, network, privilege, service, runtime, or host
 action.
@@ -33,7 +33,7 @@ GATE_B_KIND = "K1sQ1GateBAttestation"
 GATE_B_ENDPOINT_KIND = "K1sQ1GateBEndpoint"
 RECEIPT_KIND = "K1sQ1BundleAcceptanceReceipt"
 CANDIDATE_DISTRIBUTION = "k1s-core"
-CANDIDATE_VERSION = "1.0.0a3"
+CANDIDATE_VERSION = "1.0.0"
 SOURCE_DATE_EPOCH = 1_793_664_000
 MAX_BUNDLE_BYTES = 2 * 1024 * 1024 * 1024
 MAX_MEMBER_BYTES = 1024 * 1024 * 1024
@@ -506,9 +506,9 @@ def _validate_member_rows(value: object) -> list[dict[str, object]]:
     if [row["path"] for row in rows] != sorted(seen, key=lambda item: item.encode("utf-8")):
         raise _fail()
     role_rows = {role: [row for row in rows if row["role"] == role] for role in ROLE_COUNTS}
-    if role_rows["k1s-wheel"][0]["path"] != ("payload/k1s/k1s_core-1.0.0a3-py3-none-any.whl"):
+    if role_rows["k1s-wheel"][0]["path"] != ("payload/k1s/k1s_core-1.0.0-py3-none-any.whl"):
         raise _fail()
-    if role_rows["k1s-sdist"][0]["path"] != "payload/k1s/k1s_core-1.0.0a3.tar.gz":
+    if role_rows["k1s-sdist"][0]["path"] != "payload/k1s/k1s_core-1.0.0.tar.gz":
         raise _fail()
     if role_rows["requirements-lock"][0]["path"] != ("payload/offline/requirements-release.lock"):
         raise _fail()

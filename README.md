@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="https://raw.githubusercontent.com/the-cm-collective/k1s/main/media/style/web-logos/k1s-killa-bee-refresh-0526.png" alt="k1s logo" width="260" />
-</p>
+![k1s logo](https://raw.githubusercontent.com/the-cm-collective/k1s/main/media/style/web-logos/k1s-killa-bee-refresh-0526.png)
 
 # k1s Minimal Application Engine
 
@@ -14,13 +12,26 @@ Project principles and non-goals: `TENETS.md`. Cognitive-substrate philosophy an
 
 ## Status & Production Use
 
-k1s is entering its 1.0 alpha line and remains actively evolving. The current
-candidate establishes a tested compatibility boundary for the distribution,
-imports, commands, and core installed contracts while runtime and fabric
-surfaces continue through explicit qualification gates.
+k1s `1.0.0` establishes the stable Python distribution, import, command, profile,
+artifact, and metadata-safe WorkerBee evidence contracts qualified through the
+1.0 release-candidate train. Environment-specific runtime, CRI/containerd,
+provider, appliance, and deployment behavior still requires explicit local
+validation; package stability does not replace operational acceptance.
+
+Install the stable package from PyPI:
+
+```text
+python -m pip install k1s-core
+k1s --help
+```
+
+Use `python -m pip install 'k1s-core==1.0.0'` when the environment must pin
+the exact stable release.
 
 Production guidance:
-- Recommended now: labs, staging, and controlled production pilots with explicit operator ownership.
+- Recommended now: installed-package use, source review, labs, staging, and
+  explicitly scoped deployments after environment-specific live validation and
+  with explicit operator ownership.
 - Not yet recommended: broad multi-tenant or compliance-critical environments that require full Kubernetes semantics.
 - Always run environment-specific security review, failure drills, and rollout validation before promotion.
 
@@ -55,6 +66,7 @@ Production guidance:
 - CI examples: `docs/ops/ci-gh-actions.md`
 - Python distribution identity and release compatibility:
   `docs/reference/python-distribution.md`
+- Installed `k1s` command reference: `docs/reference/k1s-cli.md`
 - Stable and experimental public contracts: `docs/reference/public-contracts.md`
 - Experimental metadata-safe WorkerBee profile evidence contract:
   `docs/reference/workerbee-profile-adapter.md`
@@ -67,18 +79,47 @@ Dashboard:
 Playground:
 ![Playground](https://raw.githubusercontent.com/the-cm-collective/k1s/main/media/docs.home.arpa_8443_playground.html.png)
 
-## Quickstart
+## Quickstart: installed package contract
 
-1) Install (editable for dev):
+Install the public Python distribution from an approved package index or exact
+reviewed artifact:
+
+```
+python -m pip install k1s-core
+k1s --help
+k1s profile list
+k1s profile doctor core
+k1s profile plan core
+k1s profile doctor edge-gateway
+k1s profile plan edge-gateway
+k1s profile doctor node
+k1s profile plan node
+```
+
+The distribution name is `k1s-core`; the runtime package remains importable as
+`ae`. `k1s` is the primary installed command. The historical `ae` command is
+also installed as the advanced compatibility and engineering surface. These
+profile commands are deterministic and non-mutating. They prove the installed
+source contract only; they do not start a runtime, prepare a host, or qualify
+live WorkerBee, CRI/containerd, provider, or deployment behavior.
+
+See `docs/reference/python-distribution.md` and
+`docs/reference/public-contracts.md` for the 1.0 pre-release compatibility
+policy.
+
+### Contributor and source-checkout development
+
+The remaining quickstart steps are repository-development instructions. Make
+targets, `python -m ae.*`, and paths under `scripts/`, `specs/`, `state/`, and
+`ops/` require a source checkout and are not commands supplied by a
+`pip install k1s-core` environment. Host tools, runtimes, and `sudo` commands
+are separately managed prerequisites.
+
+Install an editable checkout for development:
 
 ```
 python -m pip install -e .[dev]
 ```
-
-Published Python artifacts use the distribution name `k1s-core`. The runtime
-package remains importable as `ae`, and the `k1s` and historical `ae*` command
-entry points remain available. See `docs/reference/python-distribution.md` and
-`docs/reference/public-contracts.md` for the 1.0-alpha compatibility policy.
 
 Optional: add file-watching support for instant reconciles on spec changes:
 
@@ -176,17 +217,23 @@ k1s profile plan edge-gateway --output json
 ```
 
 The production `edge-gateway` role never includes the development worker stub.
-Legacy `edge` and `edge-core` aliases remain development-only. Existing
-`profile start|status|stop|restart` actions retain their checkout-local
-compatibility behavior pending later stateful lifecycle work. See
-`docs/reference/profile-lifecycle.md` for the exact role, alias, schema, and
-exit-code contracts.
+Legacy `edge` and `edge-core` aliases remain development-only. Canonical
+`local`, `core`, `edge-gateway`, and `node` roles use the installed,
+exact-owner portable lifecycle for `start|status|stop|restart`, plus explicit
+`run`, bounded `logs`, and confirmed `delete` commands. Bootstrap, migration,
+and strict-CRI host transactions are explicit experimental surfaces; they do
+not discover ambient authority or silently change roles/backends. See
+`docs/reference/k1s-cli.md` for the command map and
+`docs/reference/profile-lifecycle.md` for the normative state and evidence
+contracts.
 
 The installed `k1s-core` package also contains a versioned, metadata-safe
-WorkerBee profile evidence adapter. It projects already selected JSON results;
-it adds no command, starts nothing, emits no raw log or connection value, and
-remains `source-validated/unqualified`. Exact WorkerBee rebind and combined
-disposable-guest qualification remain required before RC promotion. See
+WorkerBee profile evidence adapter. Its v1 wire and six-operation same-runtime
+consumer fixture are source/synthetic/local-contract qualified. The public
+posture remains `source-validated/unqualified`: it projects already selected
+JSON results, adds no command, starts nothing, and emits no raw log or connection
+value. Live WorkerBee acquisition/channel binding, retained W4 evidence, and
+combined disposable-guest qualification remain required before RC promotion. See
 `docs/reference/workerbee-profile-adapter.md`.
 
 API endpoints (when started with `--metrics-port`): see `docs/reference/http-api.md`.

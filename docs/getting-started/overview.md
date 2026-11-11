@@ -94,6 +94,17 @@ Multi-node lab (two hosts): follow `docs/guides/multinode-lab.md` or run `ops/de
 - `k1s describe app/echo`
 - `k1s logs app/echo --follow --tail 100`
 
+The installed profile catalog is available without starting a runtime:
+
+- `k1s profile list`
+- `k1s profile doctor core`
+- `k1s profile plan edge-gateway --output json`
+
+Stateful profile commands are explicit, exact-owner operations. Read the
+[k1s CLI reference](k1s-cli.html) and
+[profile lifecycle contract](profile-lifecycle.html) before using
+them.
+
 5) API and metrics
 
 - JSON and metrics: `curl :9108/status`, `curl :9108/metrics`

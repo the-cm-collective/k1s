@@ -740,13 +740,9 @@
       <a href="ingress-capability-test-sequence.html">Ingress Validation</a>
       <span class="nav-group-label" aria-hidden="true">API</span>
       <a href="http-api.html">HTTP API</a>
+      <a href="swagger/">Swagger (Static)</a>
       <a href="api-shim.html">API Shim</a>
       <a href="api-auth.html">API Auth</a>
-      <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
-      <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <span class="nav-group-label" aria-hidden="true">Live</span>
-      <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
-      <a href="playground.html">Playground</a>
     </nav>
     <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
       <svg class="icon-sun" viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
@@ -759,6 +755,20 @@
     <div class="container">
     <h1 id="multi-node-lab">Multi-Node Lab</h1>
 <p>This walkthrough is a manual test pattern for the core hub plus edge gateways. It focuses on a JetStream hub with lightweight edge sites and multiple gateways per site. For the ops-focused companion runbook, see <code>docs/ops/core-edge-manual-test.md</code>.</p>
+<h2 id="installed-package-contract">Installed package contract</h2>
+<p>Install the public distribution from an approved package index or exact reviewed artifact, then inspect the shipped profile contracts without starting a runtime or preparing a host:</p>
+<pre><code>python -m pip install k1s-core
+k1s --help
+k1s profile list
+k1s profile doctor core
+k1s profile plan core
+k1s profile doctor edge-gateway
+k1s profile plan edge-gateway
+k1s profile doctor node
+k1s profile plan node</code></pre>
+<p><code>k1s</code> is the primary installed package CLI. The broader <code>ae</code> command is the installed advanced compatibility and engineering surface. The commands above establish only the source-validated installed contract. They do not qualify a live WorkerBee channel, CRI/containerd transport, provider, deployment, or multi-node topology.</p>
+<h2 id="contributor-development-live-lab">Contributor/development live lab</h2>
+<p>The remainder of this guide is source-checkout and host-lab material. Make targets, <code>python -m ae.*</code>, repository scripts, and paths under <code>specs/</code>, <code>state/</code>, and <code>ops/</code> are not supplied as public commands by <code>pip install k1s-core</code>. Commands using host tools or <code>sudo</code> are separately managed prerequisites. Preserve these procedures for contributor validation, but do not treat them as installed-package or completed live-qualification evidence.</p>
 <h2 id="quick-navigation">Quick Navigation</h2>
 <p>Podman / mixed-runtime patterns:</p>
 <ul>
@@ -2134,95 +2144,10 @@ rg -n &quot;app-edge-local.home.arpa&quot; state/profiles/k1s-core/edge-local/ed
       <div class="container inner">
         <span>k1s Documentation</span>
         <span class="spacer"></span>
-        <button id="api-mode-toggle">API Mode</button>
-        <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-06-05 21:36:21</span>
+
+        <span>Built 2026-11-11 18:49:09</span>
       </div>
     </footer>
-    <script>
-      (function() {
-        var btn = document.getElementById('api-mode-toggle');
-        if (!btn) return;
-        function label() {
-          var mode = localStorage.getItem('docsApiMode') || 'proxy';
-          btn.textContent = (mode === 'direct') ? 'API Mode: Direct' : 'API Mode: Proxy';
-          var lab = document.getElementById('api-mode-label');
-          if (lab) {
-            if (mode === 'direct') {
-              var base = (window.DOCS_API_BASE||'').trim() || '(unset)';
-              lab.textContent = ' [' + base + ']';
-            } else {
-              lab.textContent = ' (proxy)';
-            }
-          }
-        }
-        btn.addEventListener('click', function() {
-          var cur = localStorage.getItem('docsApiMode') || 'proxy';
-          var next = (cur === 'direct') ? 'proxy' : 'direct';
-          localStorage.setItem('docsApiMode', next);
-          label();
-          if (location.pathname.endsWith('playground.html')) location.reload();
-        });
-        label();
-      })();
-    </script>
-    <script>
-      (function() {
-        function hideLinks(match) {
-          var links = document.querySelectorAll('a[href]');
-          links.forEach(function(a) {
-            var href = a.getAttribute('href') || '';
-            if (match(href)) { a.style.display = 'none'; }
-          });
-        }
-        function rewriteDashboardLinks(target) {
-          if (!target) return;
-          var links = document.querySelectorAll('a[href]');
-          links.forEach(function(a) {
-            var href = a.getAttribute('href') || '';
-            if (href.indexOf('/dashboard') === 0) {
-              a.setAttribute('href', target);
-              if (!a.getAttribute('target')) {
-                a.setAttribute('target', '_blank');
-                a.setAttribute('rel', 'noopener');
-              }
-            }
-          });
-        }
-        function disablePlaygroundPage() {
-          var path = (location && location.pathname) ? location.pathname : '';
-          if (!/playground/i.test(path)) return;
-          var container = document.querySelector('.container');
-          if (container) container.style.display = 'none';
-          var msg = document.createElement('div');
-          msg.style.maxWidth = '960px';
-          msg.style.margin = '32px auto';
-          msg.style.padding = '16px 20px';
-          msg.style.border = '1px solid var(--border)';
-          msg.style.borderRadius = '12px';
-          msg.style.background = 'var(--k1s-panel)';
-          msg.style.color = 'var(--k1s-text)';
-          msg.innerHTML = '<h2 style="margin:0 0 8px">Playground disabled</h2>' +
-            '<p style="margin:0;color:var(--k1s-text-muted)">This environment has disabled the interactive playground. Enable AE_PLAYGROUND=1 on the controller to re-enable it.</p>';
-          document.body.insertBefore(msg, document.body.firstChild);
-        }
-        fetch('/ui/features', { credentials: 'same-origin' })
-          .then(function(r) { return r.ok ? r.json() : null; })
-          .then(function(f) {
-            if (!f) return;
-            if (f.dashboard === false) {
-              hideLinks(function(h) { return h.indexOf('/dashboard') !== -1; });
-            } else {
-              var dashUrl = (window.DOCS_DASHBOARD_URL || '').trim();
-              rewriteDashboardLinks(dashUrl);
-            }
-            if (f.playground === false) {
-              hideLinks(function(h) { return h.indexOf('playground') !== -1; });
-              disablePlaygroundPage();
-            }
-          })
-          .catch(function() {});
-      })();
-    </script>
+
   </body>
 </html>

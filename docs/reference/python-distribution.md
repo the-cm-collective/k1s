@@ -5,6 +5,31 @@ This distribution identity matches the K1s core runtime consumed by local
 WorkerBee wheelhouses. The rename does not rename the runtime's established
 Python or command surfaces.
 
+## Install and inspect
+
+Install `k1s-core` from an approved package index or exact reviewed artifact:
+
+```text
+python -m pip install k1s-core
+k1s --help
+k1s profile list
+k1s profile doctor core
+k1s profile plan core
+k1s profile doctor edge-gateway
+k1s profile plan edge-gateway
+k1s profile doctor node
+k1s profile plan node
+```
+
+`k1s` is the primary installed package command. `ae` remains the installed
+advanced compatibility and engineering surface. The profile inspection above
+is deterministic, non-mutating, and reports the
+`source-validated/unqualified` posture; it does not start a runtime, prepare a
+host, or establish live WorkerBee, CRI/containerd, provider, or deployment
+qualification. Make targets, `python -m ae.*`, and repository paths under
+`scripts/`, `specs/`, `state/`, or `ops/` are source-checkout development
+material rather than wheel-provided commands.
+
 ## Preserved compatibility surfaces
 
 - Python imports remain under `ae`, including `import ae` and all
@@ -119,17 +144,30 @@ the synthetic facts describe a live host.
 
 ## Version posture
 
-The `v0.1.7` tag and changelog establish the latest stable lineage. `0.1.8a1`
-introduced the `k1s-core` distribution transition, and `1.0.0a3` is the current
-PEP 440 candidate. The alpha begins the public compatibility contract in
-`public-contracts.md`; it does not make experimental surfaces stable or claim
-broad production readiness.
+The `v0.1.7` tag and changelog establish the earlier stable lineage. `0.1.8a1`
+introduced the `k1s-core` distribution transition, and `1.0.0` is the current
+stable PEP 440 source identity. The alpha established the public compatibility
+contract in `public-contracts.md`; stable 1.0 does not make experimental
+surfaces stable or claim broad production readiness.
 
-The accepted implementation baseline completed isolated Q1 source/runtime
-qualification before this version transition. The `1.0.0a3` artifacts are
-rebuilt from their own immutable commit and must pass deterministic two-lane,
-strict installed-artifact, and publication review gates. Combined
-K1s/WorkerBee qualification remains required before RC promotion.
+The immutable local annotated `v1.0.0rc1` tag identifies the exact reviewed
+prior source checkpoint. RC1 was not published, and that local tag is not
+evidence of package-index publication, deployment, live qualification, or
+stable promotion.
+
+The published `1.0.0rc2` artifacts completed exact-candidate promotion and
+clean installed-package qualification before the stable version transition.
+
+The accepted implementation baseline completed source and synthetic checks for
+the isolated Q1 capsule, conductor, teardown, and replay contracts before this
+version transition. It did not complete live disposable-guest CRI/containerd,
+provider, deployment, or appliance qualification. The `1.0.0` artifacts are
+built from their own immutable commit and must pass deterministic two-lane,
+strict installed-artifact, and publication review gates. The K1 review at
+`c9178a5235b695784ed839f31901d476afdd6a98` qualifies the WorkerBee v1 wire and
+pure same-runtime consumer fixture; live W4 acquisition/channel binding and
+combined K1s/WorkerBee qualification remain required before publication or
+stable promotion.
 
 The canonical runtime version is the literal `ae.__version__` in
 `src/ae/__init__.py`. Setuptools reads that literal as dynamic distribution

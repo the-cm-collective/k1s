@@ -3,9 +3,12 @@
 K1s ships one experimental, metadata-safe adapter for later WorkerBee
 consumers. It adds no distribution or console. The pure Python API in
 `ae.kctl.profile_adapter` invokes no lifecycle command and opens no runtime or
-network connection. The adapter accepts an already selected successful K1s JSON result
-and returns a strict allowlist projection. Its qualification posture is always
-`source-validated/unqualified`.
+network connection. The adapter accepts an already selected successful K1s JSON
+result and returns a strict allowlist projection. Its exact v1 wire and local
+same-runtime consumer fixture are source/synthetic/local-contract qualified.
+Its public qualification posture is still always
+`source-validated/unqualified` because that evidence does not qualify a live
+provider, MCP channel, runtime, or deployment.
 
 The installed contract resource is
 `ae/resources/profiles/workerbee-adapter-v1.json`. It is canonical UTF-8 JSON
@@ -207,6 +210,48 @@ IDs, runtime socket details, raw connection values, timestamps, arbitrary
 errors, summaries, warnings, and log content. Project-scoped explicit `nodeId`
 is deliberately public. The adapter creates no secret-derived pseudonym.
 
+## W-P0-1 consumer binding and W4 evidence
+
+The W-P0-1 K1 compatibility review requires no v1 wire change. A single
+same-runtime provider may acquire the selected `list`, `doctor`, `plan`,
+`status`, and `logs` source results through the WorkerBee MCP boundary and pass
+each payload and exit code directly to `adapt_workerbee_profile_evidence`.
+Source acquisition and evidence projection must use the same installed
+`k1s-core` runtime so that resource bytes, `ae.__version__`, provenance, and
+validation code cannot diverge.
+
+Bootstrap is deliberately different. The read-only provider must never invoke
+`profile bootstrap create`. It may adapt only a public bootstrap projection
+that was already selected by an independently authorized workflow. The
+descriptor's `sourceMutating=true` records the origin of that projection; it
+does not grant the adapter or WorkerBee permission to create a bootstrap.
+`adapterMutating` remains false for all six operations.
+
+WorkerBee W4 must retain, for each operation in the exact resource order, the
+canonical evidence bytes, `evidenceId`, SHA-256 of those bytes, operation name,
+and complete evidence `provenance`. It must also retain the exact installed
+adapter resource bytes and their SHA-256 once for the six-record set. The W4
+set is incomplete unless it contains exactly `list`, `doctor`, `plan`,
+`status`, `logs`, and `bootstrap`.
+
+The retained `logs` record contains only owned component metadata,
+`lineCount`, `sourceTruncated`, and pseudonymous `runRef`; raw source lines are
+not retained. The retained bootstrap record is the canonical evidence output,
+not the selected source projection or private bootstrap record. W4 must not
+retain source log text, raw run IDs, connection values, credentials, tokens,
+source/stored paths, private record digests, or bootstrap creation authority.
+Replaying each retained canonical evidence object through
+`verify_workerbee_profile_evidence` must reproduce its object exactly.
+
+This qualification proves that `k1s-core 1.0.0a3` is wire-compatible with the
+locked W-P0-1 consumer design. It does not qualify the live MCP transport,
+authenticate the provider process, authorize bootstrap creation, or replace
+the combined disposable-guest qualification gate.
+
+The RC2 candidate preserves that exact v1 wire contract. A current `1.0.0`
+same-runtime replay is required before its evidence can be accepted for RC
+review; this source update alone is not an RC qualification claim.
+
 ## Compatibility and qualification boundary
 
 V1 rejects unknown fields and versions; consumers do not ignore additive
@@ -217,5 +262,10 @@ or console. Installed validation runs all six synthetic projections outside a
 checkout with indexes and sockets disabled.
 
 This contract does not inspect WorkerBee, authenticate an observation, start a
-profile, read a runtime, or qualify a live engine/transport/CRI boundary. W-P0-1
-and Q1 remain mandatory before public alpha or any live-qualified claim.
+profile, read a runtime, or qualify a live engine/transport/CRI boundary. The
+K1 compatibility lane at `c9178a5235b695784ed839f31901d476afdd6a98`
+qualifies the exact resource, canonical projection, redaction rules, and
+six-operation consumer fixture without changing the v1 wire. The remaining
+W-P0-1 and Q1 live gates—same-runtime MCP acquisition, provider-process
+identity, retained W4 evidence, and combined disposable-guest qualification—
+remain mandatory before RC promotion or any live-qualified claim.

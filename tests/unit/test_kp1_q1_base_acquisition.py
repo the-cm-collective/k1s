@@ -83,10 +83,10 @@ def _fixture(
     spec: dict[str, object] = {
         "apiVersion": acquisition.API_VERSION,
         "kind": acquisition.SPEC_KIND,
-        "outputName": "qh5b-b1-1.0.0a3-11111111-20261109T162500Z",
+        "outputName": "qh5b-b1-1.0.0-11111111-20261109T162500Z",
         "outputParent": str(parent),
         "schemaVersion": acquisition.SCHEMA_VERSION,
-        "source": {"commit": "1" * 40, "tree": "2" * 40, "version": "1.0.0a3"},
+        "source": {"commit": "1" * 40, "tree": "2" * 40, "version": "1.0.0"},
         "tools": tools,
         "transaction": {
             "expectedSha256": _digest(transaction_raw),
@@ -185,7 +185,7 @@ def test_plan_binds_transaction_tools_candidate_and_private_root(tmp_path: Path)
     [
         lambda spec: spec.update(extra=True),
         lambda spec: spec.update(outputName="qh5b-b1-1.0.0a3-22222222-20261109T162500Z"),
-        lambda spec: spec["source"].update(version="1.0.0"),
+        lambda spec: spec["source"].update(version="1.0.1"),
         lambda spec: spec["transaction"].update(expectedSha256=_digest(b"wrong")),
     ],
 )

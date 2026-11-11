@@ -63,14 +63,33 @@ git push origin v0.1.0
   synthesis for a source-only dependency. Its approved TestPyPI job stopped
   before OIDC upload when a shell glob supplied three subjects to a
   one-subject attestation command.
-- `1.0.0a3` is the current candidate. It verifies all seven exact publication
-  subjects with one GitHub CLI invocation per subject in both index workflows.
-  Stable `1.0.0` remains gated by exact-candidate publication, WorkerBee
-  integration, combined qualification, and RC review.
+- `1.0.0a3` closed the alpha publication-contract corrections by verifying all
+  seven exact publication subjects with one GitHub CLI invocation per subject
+  in both index workflows.
+- `1.0.0rc1` is an immutable local release-candidate source checkpoint. The
+  immutable local annotated `v1.0.0rc1` tag identifies that exact checkpoint;
+  RC1 was not published to a package index.
+- `1.0.0rc2` is the published release-candidate identity that completed exact
+  TestPyPI/PyPI artifact promotion and clean installed-package qualification
+  with `k1s-workerbee==1.0.0rc2`.
+- `1.0.0` promotes the qualified distribution, import, command, profile,
+  artifact, and metadata-safe WorkerBee evidence contracts to the stable
+  package identity. Environment-specific WorkerBee/MCP, CRI/containerd,
+  provider, appliance, and deployment acceptance remains an operational gate;
+  the stable package version does not claim that every deployment topology has
+  been exercised.
 - The WorkerBee profile evidence adapter is an experimental v1 wire contract
   within `k1s-core`; its `v1` schema identifier does not declare K1s 1.0 API
-  stability. Unknown fields/versions fail closed. Its exact public K1s rebind
-  and the combined K1s/WorkerBee qualification remain later release gates.
+  stability. Unknown fields/versions fail closed. The K1 review at
+  `c9178a5235b695784ed839f31901d476afdd6a98` qualifies the exact wire and pure
+  same-runtime projection against the locked W-P0-1 consumer design. Live MCP
+  acquisition/channel binding, provider-process identity, retained W4 evidence,
+  and combined K1s/WorkerBee disposable-guest qualification remain later
+  release gates.
+- `review/v1.0.0rc1-prep-20261110` and the annotated
+  `review/k1s-1.0.0rc1-prep-20261110` marker identify a non-release review point
+  only. They are not `v1.0.0rc1`, do not change the package version, and confer
+  no publication or promotion authority.
 
 ## 1.0 alpha compatibility contract
 

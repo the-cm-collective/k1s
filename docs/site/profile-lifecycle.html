@@ -1,0 +1,930 @@
+<!doctype html>
+<html data-theme="dark">
+  <head>
+    <meta charset="utf-8"/>
+
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>Profile Lifecycle</title>
+    <link rel="icon" href="static/favicon.ico" sizes="any"/>
+    <link rel="icon" type="image/svg+xml" href="static/favicon-32x32.svg"/>
+    <link rel="icon" type="image/png" sizes="32x32" href="static/favicon-32x32.png"/>
+    <link rel="icon" type="image/svg+xml" href="static/favicon-16x16.svg"/>
+    <link rel="icon" type="image/png" sizes="16x16" href="static/favicon-16x16.png"/>
+    <link rel="icon" type="image/svg+xml" href="static/favicon-48x48.svg"/>
+    <link rel="icon" type="image/png" sizes="48x48" href="static/favicon-48x48.png"/>
+    <link rel="apple-touch-icon" sizes="180x180" href="static/icon-180x180.png"/>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --k1s-bg: #121212;
+        --k1s-surface: #181818;
+        --k1s-panel: #2c2c2c;
+        --k1s-border: #404040;
+        --k1s-border-soft: #4a4a4a;
+        --k1s-text: #e5e7eb;
+        --k1s-text-muted: #9ca3af;
+        --k1s-primary: #2563eb;
+        --k1s-primary-soft: #3b82f6;
+        --k1s-highlight: #60a5fa;
+        --k1s-info: #0284c7;
+        --k1s-info-bg: #e0f2fe;
+        --k1s-success: #16a34a;
+        --k1s-success-bg: #16a34a33;
+        --k1s-warn: #f59e0b;
+        --k1s-warn-bg: #f59e0b33;
+        --k1s-danger: #ef4444;
+        --k1s-danger-bg: #ef444433;
+        --k1s-card-bg: #2c2c2c;
+        --k1s-header-bg: #0a0a0a10;
+        --k1s-radius: 8px;
+        --k1s-radius-pill: 999px;
+        --k1s-gap: 12px;
+        --k1s-brand-gold: #fbc02d;
+        --k1s-brand-graphite: #404040;
+        --k1s-brand-mist: #f1f1f1;
+        --k1s-page-bg-image: url('static/dash-assets/page-background-3840x2160.png');
+        --k1s-page-overlay: linear-gradient(rgba(7,10,14,0.72), rgba(7,10,14,0.72));
+        /* Legacy aliases used by docs/labs styles */
+        --bg: var(--k1s-bg);
+        --fg: var(--k1s-text);
+        --muted: var(--k1s-panel);
+        --link: #5a86c9;
+        --link-hover: #7aa0e8;
+        --code-bg: #1b1b1b;
+        --border: var(--k1s-border);
+      }
+      html[data-theme="light"] {
+        --k1s-bg: #f4f5f7;
+        --k1s-surface: #f8fafb;
+        --k1s-panel: #ffffff;
+        --k1s-border: #d4d7dd;
+        --k1s-border-soft: #e6e8ec;
+        --k1s-text: #0f141c;
+        --k1s-text-muted: #4a5565;
+        --k1s-card-bg: #ffffff;
+        --k1s-header-bg: rgba(255,255,255,0.82);
+        --code-bg: #f5f6f8;
+        --k1s-page-overlay: linear-gradient(rgba(244,245,247,0.9), rgba(244,245,247,0.9));
+        --bg: var(--k1s-bg);
+        --fg: var(--k1s-text);
+        --muted: var(--k1s-panel);
+        --link: #2f59b9;
+        --link-hover: #3b63c5;
+        --border: var(--k1s-border);
+      }
+    </style>
+    <style>
+      /* Base layout aligned to dashboard palette */
+      html { height: 100%; }
+      *, *::before, *::after { box-sizing: border-box; }
+      body {
+        font-family: system-ui, -apple-system, "Segoe UI", "Roboto", sans-serif;
+        margin: 0;
+        padding: 2rem;
+        line-height: 1.55;
+        box-sizing: border-box;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        background-color: var(--bg);
+        background-image: var(--k1s-page-overlay), var(--k1s-page-bg-image);
+        background-size: 100% 100%, auto 100%;
+        background-position: center top, center top;
+        background-repeat: repeat-y, repeat-y;
+        color: var(--fg);
+      }
+      img { max-width: 100%; height: auto; }
+      nav {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: .6rem;
+        justify-content: center;
+        margin: 0 auto 1.25rem auto;
+        width: min(100%, 1320px);
+        padding: 10px 16px;
+        box-sizing: border-box;
+        background: var(--k1s-panel);
+        border: 1px solid var(--k1s-border);
+        border-radius: 14px;
+        box-shadow: 0 8px 30px rgba(0,0,0,0.12);
+        position: sticky;
+        top: 12px;
+        z-index: 10;
+        backdrop-filter: blur(6px);
+        -webkit-backdrop-filter: blur(6px);
+      }
+      nav::after {
+        content: "";
+        position: absolute;
+        left: 14px;
+        right: 14px;
+        bottom: 6px;
+        height: 2px;
+        border-radius: 999px;
+        background: linear-gradient(90deg, transparent, var(--k1s-brand-gold), transparent);
+        opacity: 0.5;
+        pointer-events: none;
+      }
+      nav a {
+        display: inline-flex;
+        align-items: center;
+        gap: .25rem;
+        padding: 7px 12px;
+        border: 1px solid var(--k1s-border);
+        border-radius: 10px;
+        background: var(--k1s-card-bg);
+        color: var(--fg);
+        text-decoration: none;
+        box-shadow: 0 6px 16px rgba(0,0,0,0.16);
+        transition: background .15s ease, border-color .15s ease, transform .12s ease, color .15s ease;
+        font-weight: 600;
+      }
+      nav .nav-group-label {
+        display: inline-flex;
+        align-items: center;
+        padding: 4px 2px 4px 8px;
+        color: var(--k1s-text-muted);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        white-space: nowrap;
+      }
+      nav .nav-group-label::before {
+        content: "";
+        width: 16px;
+        height: 1px;
+        margin-right: 8px;
+        background: linear-gradient(90deg, transparent, var(--k1s-brand-gold));
+        opacity: 0.75;
+      }
+      nav a:hover {
+        background: var(--k1s-surface);
+        border-color: var(--k1s-brand-gold);
+        color: var(--link-hover);
+        transform: translateY(-1px);
+      }
+      nav .nav-brand {
+        gap: 10px;
+        padding: 6px 10px;
+        border: 1px solid transparent;
+        background: transparent;
+        box-shadow: none;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        font-size: 11px;
+        color: var(--k1s-text-muted);
+      }
+      nav .nav-brand:hover {
+        background: color-mix(in srgb, var(--k1s-card-bg) 60%, transparent);
+        border-color: var(--k1s-brand-gold);
+        color: var(--fg);
+        transform: translateY(0);
+      }
+      nav .nav-brand img {
+        width: 28px;
+        height: 28px;
+        border-radius: 999px;
+        box-shadow: 0 6px 16px rgba(0,0,0,0.2);
+      }
+      nav a:active { transform: translateY(0); }
+      .spacer { flex: 1 1 auto; }
+      button#api-mode-toggle {
+        background: var(--k1s-card-bg);
+        color: var(--fg);
+        border: 1px solid var(--k1s-border);
+        border-radius: 8px;
+        padding: 6px 10px;
+        cursor: pointer;
+        transition: background .15s ease, border-color .15s ease;
+      }
+      button#api-mode-toggle:hover {
+        background: var(--k1s-surface);
+        border-color: var(--k1s-border-soft);
+      }
+      .theme-fab {
+        position: fixed;
+        right: 18px;
+        bottom: 140px;
+        width: 52px;
+        height: 52px;
+        border-radius: 50%;
+        border: 1px solid var(--k1s-border);
+        background: var(--k1s-card-bg);
+        color: var(--fg);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 12px 35px rgba(0,0,0,0.32);
+        cursor: pointer;
+        z-index: 20;
+        transition: background .15s ease, border-color .15s ease, transform .15s ease, box-shadow .15s ease;
+      }
+      .theme-fab:hover {
+        background: var(--k1s-surface);
+        border-color: var(--k1s-border-soft);
+        transform: translateY(-1px);
+        box-shadow: 0 14px 40px rgba(0,0,0,0.38);
+      }
+      .theme-fab:active { transform: translateY(0); }
+      .theme-fab svg { width: 26px; height: 26px; fill: currentColor; }
+      .theme-fab .icon-sun { display: none; }
+      html[data-theme="light"] .theme-fab .icon-sun { display: block; }
+      html[data-theme="light"] .theme-fab .icon-moon { display: none; }
+      html[data-theme="dark"] .theme-fab .icon-moon { display: block; }
+      @media (max-height: 740px) {
+        .theme-fab { bottom: 32px; }
+      }
+      code, pre {
+        background: var(--code-bg);
+        border: 1px solid var(--border);
+        color: var(--fg);
+        border-radius: 8px;
+      }
+      code { overflow-wrap: anywhere; }
+      pre code { overflow-wrap: normal; }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 1rem 0;
+        background: var(--k1s-panel);
+        border: 1px solid var(--k1s-border);
+        border-radius: 10px;
+        overflow: hidden;
+      }
+      thead th {
+        text-align: left;
+        padding: 12px 14px;
+        background: var(--k1s-card-bg);
+        border-bottom: 1px solid var(--k1s-border);
+        color: var(--fg);
+        font-weight: 600;
+      }
+      tbody td {
+        padding: 12px 14px;
+        border-top: 1px solid var(--k1s-border-soft);
+        color: var(--fg);
+        vertical-align: top;
+      }
+      tbody tr:nth-child(even) td {
+        background: color-mix(in srgb, var(--k1s-panel) 92%, #000000 8%);
+      }
+      html[data-theme="light"] tbody tr:nth-child(even) td {
+        background: color-mix(in srgb, var(--k1s-panel) 92%, #ffffff 8%);
+      }
+      pre {
+        padding: 12px;
+        overflow-x: auto;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+        position: relative;
+      }
+      pre::-webkit-scrollbar { width: 0; height: 0; }
+      pre.has-copy { padding-top: 32px; }
+      .copy-btn {
+        position: absolute;
+        top: 8px;
+        right: 10px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 9px;
+        border-radius: 8px;
+        border: 1px solid var(--k1s-border);
+        background: var(--k1s-surface);
+        color: var(--fg);
+        font-size: 12px;
+        line-height: 1;
+        cursor: pointer;
+        box-shadow: 0 8px 22px rgba(0,0,0,0.24);
+        opacity: 0;
+        transition: opacity .14s ease, transform .12s ease, background .12s ease, border-color .12s ease;
+        z-index: 1;
+      }
+      pre:hover .copy-btn,
+      pre:focus-within .copy-btn {
+        opacity: .96;
+      }
+      .copy-btn:hover {
+        background: var(--k1s-panel);
+        border-color: var(--k1s-border-soft);
+      }
+      .copy-btn:active { transform: translateY(0); }
+      .copy-btn svg { width: 16px; height: 16px; fill: currentColor; }
+      .copy-btn.copied { color: var(--k1s-success); border-color: var(--k1s-success); }
+      h1 { margin-top: 0; font-size: 28px; letter-spacing: 0.01em; }
+      h2 { margin-top: 1.5em; font-size: 20px; }
+      h3 { margin-top: 1.1em; font-size: 17px; }
+      a { color: var(--link); }
+      a:hover { color: var(--link-hover); }
+      a:focus-visible { outline: 2px solid var(--k1s-highlight); outline-offset: 2px; border-radius: 4px; }
+      .container {
+        width: min(100%, 1320px);
+        max-width: 1320px;
+        margin: 0 auto;
+        flex: 1 0 auto;
+      }
+      .card {
+        border: 1px solid var(--k1s-border);
+        background: var(--k1s-card-bg);
+        border-radius: var(--k1s-radius);
+        padding: 10px 12px;
+      }
+      .hero {
+        position: relative;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: 16px;
+        padding: 22px;
+        border: 1px solid var(--k1s-border);
+        border-radius: 18px;
+        background:
+          radial-gradient(circle at 92% 8%, color-mix(in srgb, var(--k1s-brand-gold) 22%, transparent) 0%, transparent 55%),
+          linear-gradient(135deg, color-mix(in srgb, var(--k1s-panel) 86%, #000000 14%) 0%, var(--k1s-panel) 55%, color-mix(in srgb, var(--k1s-brand-gold) 14%, var(--k1s-panel)) 100%);
+        overflow: hidden;
+        box-shadow: 0 16px 40px rgba(0,0,0,0.18);
+      }
+      html[data-theme="light"] .hero {
+        background:
+          radial-gradient(circle at 92% 8%, color-mix(in srgb, var(--k1s-brand-gold) 26%, transparent) 0%, transparent 60%),
+          linear-gradient(135deg, #ffffff 0%, #f8f7f2 60%, color-mix(in srgb, var(--k1s-brand-gold) 18%, #ffffff) 100%);
+      }
+      .hero::after {
+        content: "";
+        position: absolute;
+        right: -24px;
+        bottom: -36px;
+        width: 220px;
+        height: 220px;
+        background: url('static/k1s-logo-circle.svg') no-repeat center / contain;
+        opacity: 0.12;
+        pointer-events: none;
+      }
+      .hero-brand {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        z-index: 1;
+      }
+      .hero-logo-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .hero-logo {
+        width: min(320px, 90%);
+        height: auto;
+        opacity: 0.85;
+      }
+      .hero-pill {
+        padding: 6px 12px;
+        border-radius: 999px;
+        font-weight: 700;
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        background: var(--k1s-brand-gold);
+        color: #2b2b2b;
+        box-shadow: 0 10px 22px rgba(251, 192, 45, 0.25);
+      }
+      .hero h1 {
+        font-size: 32px;
+        margin: 4px 0 0;
+      }
+      .hero-tagline {
+        max-width: 52ch;
+        color: var(--k1s-text-muted);
+        font-size: 15px;
+      }
+      .hero-links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 6px;
+      }
+      .hero-repo {
+        margin-top: 14px;
+        padding: 10px 12px;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-start;
+        gap: 6px 10px;
+        border: 1px solid var(--k1s-border);
+        border-radius: 12px;
+        background: var(--k1s-panel);
+        box-shadow: 0 8px 22px rgba(0,0,0,0.18);
+      }
+      .hero-repo-label {
+        font-size: 0.7rem;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--k1s-text-muted);
+      }
+      .hero-repo-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-width: 0;
+      }
+      .hero-repo-item {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+      }
+      .hero-repo-item-label {
+        font-size: 0.65rem;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--k1s-text-muted);
+      }
+      .hero-repo-link {
+        color: var(--link);
+        font-weight: 600;
+        text-decoration: none;
+        word-break: break-word;
+      }
+      .hero-repo-link:hover {
+        color: var(--link-hover);
+        text-decoration: underline;
+      }
+      .hero-link {
+        text-decoration: none;
+        padding: 6px 10px;
+        border-radius: 10px;
+        border: 1px solid var(--k1s-border-soft);
+        background: color-mix(in srgb, var(--k1s-card-bg) 70%, transparent);
+        color: var(--fg);
+        font-weight: 600;
+        font-size: 13px;
+      }
+      .hero-link--stack {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .hero-link-title {
+        font-weight: 700;
+        font-size: 13px;
+      }
+      .hero-link-sub {
+        font-weight: 400;
+        font-size: 11px;
+        line-height: 1.3;
+        color: var(--k1s-text-muted);
+      }
+      .hero-link:hover {
+        border-color: var(--k1s-brand-gold);
+        color: var(--fg);
+      }
+      .hero-actions {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 12px;
+        align-items: start;
+        z-index: 1;
+      }
+      .hero-card {
+        border: 1px solid var(--k1s-border-soft);
+        background: color-mix(in srgb, var(--k1s-card-bg) 85%, transparent);
+        border-radius: 14px;
+        padding: 12px;
+        box-shadow: 0 12px 28px rgba(0,0,0,0.18);
+      }
+      .hero-card h2 {
+        margin: 0 0 6px;
+        font-size: 16px;
+      }
+      .hero-card p {
+        margin: 0 0 10px;
+        color: var(--k1s-text-muted);
+        font-size: 13px;
+      }
+      .hero-card pre {
+        margin: 8px 0 0;
+        font-size: 12px;
+      }
+      .hero-index {
+        grid-template-columns: minmax(280px, 1.1fr) minmax(320px, 2fr);
+      }
+      .hero-index .hero-actions {
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      }
+      .hero-card--section {
+        min-height: 180px;
+      }
+      .hero-links--dense {
+        gap: 8px;
+      }
+      .hero-links--dense .hero-link {
+        font-size: 12px;
+        padding: 6px 10px;
+      }
+      .callout, blockquote {
+        border-left: 4px solid var(--k1s-primary-soft);
+        background: var(--k1s-card-bg);
+        border: 1px solid var(--k1s-border);
+        border-radius: 8px;
+        padding: 10px 12px;
+      }
+      .muted, .note { color: var(--k1s-text-muted); }
+      /* Shared helper to allow scrolling without visible bars */
+      .scrollbar-hide { scrollbar-width: none; -ms-overflow-style: none; }
+      .scrollbar-hide::-webkit-scrollbar { width: 0; height: 0; }
+      /* Improve Mermaid readability in dark mode by inverting SVG colors */
+      html[data-theme="dark"] .mermaid svg { filter: invert(1) hue-rotate(180deg) contrast(1.05) saturate(1.1); }
+      html[data-theme="dark"] .mermaid { background: var(--bg); }
+      footer.site-footer {
+        margin-top: 3rem;
+        border-top: 1px solid var(--k1s-border);
+        flex: 0 0 auto;
+      }
+      footer.site-footer .inner {
+        display: flex;
+        align-items: center;
+        gap: .75rem;
+        padding: 14px 0;
+        opacity: .85;
+      }
+      @media (hover: none) {
+        .copy-btn { opacity: .92; }
+        pre.has-copy { padding-top: 36px; }
+      }
+      @media (max-width: 980px) {
+        body { padding: 1.5rem; }
+        nav {
+          width: 100%;
+          padding: 8px 10px;
+          gap: .5rem;
+          justify-content: flex-start;
+        }
+        nav a {
+          padding: 6px 10px;
+          font-size: 12px;
+        }
+        nav .nav-group-label {
+          font-size: 10px;
+          letter-spacing: 0.1em;
+          padding-left: 6px;
+        }
+        nav .nav-brand {
+          font-size: 10px;
+          letter-spacing: 0.1em;
+        }
+        .hero {
+          padding: 18px;
+        }
+        .hero h1 { font-size: 28px; }
+        .hero-tagline { font-size: 14px; }
+        .hero-index { grid-template-columns: 1fr; }
+        .hero-actions { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+        .hero-card--section { min-height: auto; }
+        .theme-fab { right: 12px; bottom: 88px; }
+        footer.site-footer .inner { flex-wrap: wrap; }
+      }
+      @media (max-width: 720px) {
+        body { padding: 1.1rem; }
+        nav {
+          top: 8px;
+          flex-wrap: nowrap;
+          overflow-x: auto;
+          scrollbar-width: none;
+        }
+        nav::-webkit-scrollbar { width: 0; height: 0; }
+        nav a, nav .nav-group-label { flex: 0 0 auto; }
+        nav::after { left: 8px; right: 8px; }
+        h1 { font-size: 24px; }
+        h2 { font-size: 18px; }
+        h3 { font-size: 15px; }
+        .hero { padding: 16px; }
+        .hero-logo { width: min(220px, 90%); }
+        .hero-pill { font-size: 11px; }
+        .hero-links { gap: 8px; }
+        .hero-link { font-size: 12px; }
+        .hero-actions { grid-template-columns: 1fr; }
+        .theme-fab { bottom: 24px; width: 48px; height: 48px; }
+        pre { font-size: 13px; }
+        table {
+          display: block;
+          max-width: 100%;
+          width: max-content;
+          min-width: 100%;
+          overflow-x: auto;
+          -webkit-overflow-scrolling: touch;
+        }
+        thead th, tbody td { padding: 10px 12px; }
+      }
+    </style>
+    <script>
+      (function() {
+        const key = 'k1s-theme';
+        const saved = localStorage.getItem(key);
+        const initial = saved || 'dark';
+        document.documentElement.setAttribute('data-theme', initial);
+        const labels = {
+          dark: 'Switch to light mode',
+          light: 'Switch to dark mode',
+        };
+        function update(btn) {
+          var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+          var label = labels[cur] || 'Toggle theme';
+          btn.setAttribute('aria-label', label);
+          btn.setAttribute('title', label);
+        }
+        function wire() {
+          var btn = document.getElementById('theme-toggle');
+          if (!btn) return;
+          update(btn);
+          btn.addEventListener('click', function() {
+            var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+            var next = (cur === 'dark') ? 'light' : 'dark';
+            document.documentElement.setAttribute('data-theme', next);
+            localStorage.setItem(key, next);
+            update(btn);
+          });
+        }
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', wire);
+        } else {
+          wire();
+        }
+      })();
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <script>mermaid.initialize({ startOnLoad: true });</script>
+    <script>window.DOCS_API_BASE='http://127.0.0.1:9108';</script>
+    <script>window.DOCS_DASHBOARD_URL='/dashboard';</script>
+    <script>
+      // Attach copy buttons to all code blocks client-side
+      (function() {
+        function addButtons() {
+          var blocks = document.querySelectorAll('pre > code');
+          blocks.forEach(function(code) {
+            var pre = code.parentElement;
+            if (pre.dataset.hasCopy) return;
+            pre.dataset.hasCopy = '1';
+            pre.classList.add('has-copy');
+
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'copy-btn';
+            btn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1Zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2Zm0 16H8V7h11v14Z"/></svg><span>Copy</span>';
+
+            btn.addEventListener('click', function() {
+              var text = code.textContent || '';
+              var setState = function(ok) {
+                btn.classList.toggle('copied', ok);
+                btn.lastChild.textContent = ok ? 'Copied!' : 'Copy';
+                setTimeout(function() {
+                  btn.classList.remove('copied');
+                  btn.lastChild.textContent = 'Copy';
+                }, 1400);
+              };
+              if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(function() { setState(true); }, function() { setState(false); });
+              } else {
+                try {
+                  var ta = document.createElement('textarea');
+                  ta.value = text;
+                  ta.style.position = 'fixed';
+                  ta.style.opacity = '0';
+                  document.body.appendChild(ta);
+                  ta.select();
+                  document.execCommand('copy');
+                  document.body.removeChild(ta);
+                  setState(true);
+                } catch (e) {
+                  setState(false);
+                }
+              }
+            });
+
+            pre.style.position = 'relative';
+            pre.insertBefore(btn, code);
+          });
+        }
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', addButtons);
+        } else {
+          addButtons();
+        }
+      })();
+    </script>
+
+  </head>
+  <body>
+    <nav>
+      <a class="nav-brand" href="index.html" aria-label="k1s docs home"><img src="static/k1s-logo-circle.svg" alt="k1s logo" /><span>k1s docs</span></a>
+      <span class="nav-group-label" aria-hidden="true">Learn</span>
+      <a href="start-here.html">Start Here</a>
+      <a href="overview.html">Overview</a>
+      <a href="examples.html">Demos</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="concepts-in-practice.html">Concepts in Practice</a>
+      <span class="nav-group-label" aria-hidden="true">Design</span>
+      <a href="architecture.html">Architecture</a>
+      <a href="project-philosophy.html">Philosophy</a>
+      <a href="inference-fabric.html">Inference Fabric</a>
+      <a href="distributed-compute-fabric.html">Roadmap</a>
+      <span class="nav-group-label" aria-hidden="true">Operate</span>
+      <a href="runbook.html">Ops Runbook</a>
+      <a href="ha-cluster-bring-up.html">HA Bring-Up</a>
+      <a href="vm-variant-runbook.html">VM Variants</a>
+      <a href="benchmarks.html">Benchmarks</a>
+      <span class="nav-group-label" aria-hidden="true">Guides</span>
+      <a href="cri-containerd.html">CRI containerd</a>
+      <a href="multinode-lab.html">Multi-Node</a>
+      <a href="ingress.html">Ingress</a>
+      <a href="ingress-capability-test-sequence.html">Ingress Validation</a>
+      <span class="nav-group-label" aria-hidden="true">API</span>
+      <a href="http-api.html">HTTP API</a>
+      <a href="api-shim.html">API Shim</a>
+      <a href="api-auth.html">API Auth</a>
+      <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
+      <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
+      <span class="nav-group-label" aria-hidden="true">Live</span>
+      <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
+      <a href="playground.html">Playground</a>
+    </nav>
+    <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
+      <svg class="icon-sun" viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
+        <path d="M480-360q50 0 85-35t35-85q0-50-35-85t-85-35q-50 0-85 35t-35 85q0 50 35 85t85 35Zm0 80q-83 0-141.5-58.5T280-480q0-83 58.5-141.5T480-680q83 0 141.5 58.5T680-480q0 83-58.5 141.5T480-280ZM200-440H40v-80h160v80Zm720 0H760v-80h160v80ZM440-760v-160h80v160h-80Zm0 720v-160h80v160h-80ZM256-650l-101-97 57-59 96 100-52 56Zm492 496-97-101 53-55 101 97-57 59Zm-98-550 97-101 59 57-100 96-56-52ZM154-212l101-97 55 53-97 101-59-57Zm326-268Z"/>
+      </svg>
+      <svg class="icon-moon" viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
+        <path d="M480-120q-150 0-255-105T120-480q0-150 105-255t255-105q14 0 27.5 1t26.5 3q-41 29-65.5 75.5T444-660q0 90 63 153t153 63q55 0 101-24.5t75-65.5q2 13 3 26.5t1 27.5q0 150-105 255T480-120Zm0-80q88 0 158-48.5T740-375q-20 5-40 8t-40 3q-123 0-209.5-86.5T364-660q0-20 3-40t8-40q-78 32-126.5 102T200-480q0 116 82 198t198 82Zm-10-270Z"/>
+      </svg>
+    </button>
+    <div class="container">
+    <h1 id="installed-profile-contracts">Installed Profile Contracts</h1>
+<p>K1s exposes an installed, non-mutating profile catalog through three commands:</p>
+<pre><code>k1s profile list
+k1s profile doctor &lt;role-or-alias&gt;
+k1s profile plan &lt;role-or-alias&gt;</code></pre>
+<p>Each command supports <code>--output text</code> and <code>--output json</code>. They inspect only the installed profile contract. They do not start a backend, create state, prepare a host, open a network connection, invoke a service manager, or call the legacy lifecycle runner.</p>
+<p>The JSON contract uses <code>apiVersion: k1s.dev/v1alpha1</code>, <code>schemaVersion: 1</code>, and <code>mutating: false</code>. Catalog ordering and output fields are deterministic.</p>
+<h2 id="installed-catalog-resource">Installed catalog resource</h2>
+<p>The catalog is installed by <code>k1s-core</code> as the package resource <code>ae/resources/profiles/profile-catalog-v1.json</code>. That canonical JSON document contains only the static role, posture, component, requirement, alias, and deferred-execution contract described on this page. It contains no executable command, credential, environment setting, port, state path, backend setting, service definition, supervisor configuration, or host-preparation instruction.</p>
+<p>The loader accepts only canonical package-relative path components and does not fall back to the source checkout, current directory, legacy profile runner, environment, or network. Missing, malformed, duplicated-key, noncanonical, or semantically inconsistent catalog data is an invalid installation and fails closed. The wheel and source-distribution validators require the installed bytes to match this source resource exactly, and the wheel <code>RECORD</code> must cover it with the correct SHA-256 and size.</p>
+<p>This resource is static package construction, not profile installation or execution. Reading it does not create state, select a backend, prepare a host, start a supervisor, or activate a runtime.</p>
+<p>The separate <code>k1s profile host plan strict-cri</code> command is also non-mutating, but it is not a role-catalog alias or portable backend. It reads two explicit, canonical, digest-pinned files and emits a deterministic <code>source-validated/unqualified</code> Linux/containerd plan. It does not read or create profile locks, current/run state, bootstrap state, XDG roots, or backend receipts; it performs no target, process, service, socket, or network probe. Digest-bound <code>profile host prepare strict-cri</code> and <code>rollback strict-cri</code> are explicit reviewed mutations. They require the exact plan authorities, caller-supplied expected digests and confirmation, an owner-private transaction root, and pre-opened anonymous-pipe file descriptors for a helper that the CLI never launches or discovers. The installed strict-CRI node path requires a paired exact plan and applied-receipt digest. A successful plan or source-only prepare smoke is never a live qualification claim.</p>
+<p>Preparation journals <code>planned</code>, <code>snapshotting</code>, <code>snapshotted</code>, <code>applying</code>, and <code>applied</code>; rollback journals <code>rolling-back</code> and <code>rolled-back</code>. Writes are canonical, descriptor-relative, no-follow, owner-private, same-device, atomic, and fsynced. Crash recovery accepts only the exact write-ahead zero-progress state or a contiguous action prefix/suffix. Unknown, duplicate, reordered, divergent, or partially observed authority fails closed. No stale-lock timeout or takeover exists.</p>
+<h2 id="canonical-roles">Canonical roles</h2>
+<table><thead><tr><th>Role</th><th>Contract posture</th><th>Production eligible</th><th>Components</th><th>Execution</th></tr></thead><tbody><tr><td><code>local</code></td><td>GA</td><td>yes</td><td>controller, local node</td><td>portable; source-validated/unqualified</td></tr><tr><td><code>core</code></td><td>GA</td><td>yes</td><td>controller</td><td>portable; source-validated/unqualified</td></tr><tr><td><code>edge-gateway</code></td><td>GA</td><td>yes</td><td>gateway only</td><td>portable; source-validated/unqualified</td></tr><tr><td><code>node</code></td><td>GA</td><td>yes</td><td>node agent</td><td>portable; source-validated/unqualified</td></tr><tr><td><code>edge-dev</code></td><td>development-only</td><td>no</td><td>gateway, worker stub</td><td>deferred</td></tr><tr><td><code>core-ha</code></td><td>preview</td><td>no</td><td>controller replica set, HA control plane</td><td>deferred</td></tr></tbody></table>
+<p>GA describes the stability of the installed catalog and plan schema. The <code>portable</code> execution status for <code>local</code>, <code>core</code>, <code>edge-gateway</code>, and <code>node</code> says that an installed source path exists; it does not claim that Podman, Docker, the gateway transport, or the profile is live-qualified. All four remain <code>source-validated/unqualified</code> until a later isolated WorkerBee/runtime lane qualifies an exact engine, transport, and environment.</p>
+<p>The installed metadata-safe WorkerBee adapter is a reader/projector of already selected JSON results, not another lifecycle command. It maps list, doctor, plan, status, owned logs metadata, and bootstrap into an exact v1 evidence schema while omitting raw logs, paths, process authority, runtime endpoints, credentials, and free-form warnings. It never acquires a profile lock or creates state. See <code>docs/reference/workerbee-profile-adapter.md</code>; W-P0-1 and Q1 remain deferred.</p>
+<p><code>core-ha</code> is not production eligible until a later release-qualification checkpoint explicitly promotes it.</p>
+<p>The production <code>edge-gateway</code> contract contains only the gateway component. It never resolves through <code>edge-dev</code> and never includes the development worker stub.</p>
+<h2 id="compatibility-aliases">Compatibility aliases</h2>
+<p>The original profile names remain inspectable without changing their meaning:</p>
+<table><thead><tr><th>Alias</th><th>Canonical role</th><th>Compatibility variant</th><th>Safety rule</th></tr></thead><tbody><tr><td><code>edge</code></td><td><code>edge-dev</code></td><td>none</td><td>development-only and never production eligible</td></tr><tr><td><code>core-edge</code></td><td><code>core</code></td><td><code>nats-core</code></td><td>records the legacy transport variant but starts nothing</td></tr><tr><td><code>edge-core</code></td><td><code>edge-dev</code></td><td><code>core-peering</code></td><td>development-only and never resolves to <code>edge-gateway</code></td></tr></tbody></table>
+<p>The repository runner labels <code>k1s-core</code>, <code>k1s-edge</code>, and <code>k1s-ha-core</code> are adapter metadata, not additional public profile aliases.</p>
+<h2 id="command-behavior">Command behavior</h2>
+<p><code>profile list</code> emits all canonical roles, aliases, postures, component IDs, and deferred requirements. It exits zero.</p>
+<p>Without <code>--engine</code>, <code>profile doctor</code> performs static installation checks only: supported Python, Linux platform, the <code>ae</code> import, <code>k1s-core</code> distribution metadata, the <code>k1s</code> console entry point, catalog consistency, and profile posture. It does not enumerate or print environment values. A failed installed contract returns exit code 1; warnings such as preview/development posture or deferred execution return zero. <code>profile doctor local|core --engine podman|docker</code> performs one explicitly selected, bounded, read-only capability query. It does not fall back to another engine, start a daemon or machine, create XDG state, acquire a mutation lock, or promote live qualification. Invalid command usage returns 2.</p>
+<p><code>profile plan</code> returns declarative component identifiers, prerequisites, posture warnings, and compatibility context. It never returns an executable command or a mutable state path. A recognized canonical role or alias returns zero; invalid usage returns 2.</p>
+<p>Installed <code>profile start</code>, <code>status</code>, <code>stop</code>, and <code>restart</code> use the portable path for canonical <code>local</code>, <code>core</code>, <code>edge-gateway</code>, and <code>node</code>. Development and preview names retain the repository-local compatibility runner where one exists. Canonical portable roles do not accept <code>--legacy</code>. There is no automatic Podman/Docker fallback and no canonical-role fallback to <code>edge-dev</code>.</p>
+<p>The same exact-owner lifecycle surfaces accept the four portable roles:</p>
+<pre><code>k1s profile run local|core [--backend podman|docker]
+k1s profile run edge-gateway|node --bootstrap-id BOOTSTRAP
+k1s profile logs ROLE --component ID [--run-id RUN] [--tail N]
+k1s profile delete ROLE --run-id RUN --confirm-delete ROLE/RUN</code></pre>
+<p><code>run</code> claims a newly generated run under the same exclusive profile lock used by <code>start</code>; it never attaches to an already-active run. It uses the same transaction journal, activation gate, exact process identities, readiness, reverse-order stop, and owned cleanup as portable start/stop. <code>SIGINT</code> and <code>SIGTERM</code> handlers only record an intent. Normal foreground control flow performs all state, process, and filesystem actions, returning 130 or 143 after an exact clean stop. A component exit fails the run; an identity mismatch is fenced as orphaned and the mismatched process is never signalled.</p>
+<p><code>logs</code> is a bounded snapshot, never an unbounded follow. It selects either the explicit immutable run ID or the exact recorded current run, then requires the named component&#x27;s canonical <code>logs/&lt;component&gt;.log</code> descriptor. The file must remain an owner-owned, mode-<code>0600</code>, single-link regular file below the exact run directory. The default tail is 200 lines, the accepted range is 0 through 10,000, and at most 1 MiB is read. There is no filename discovery, path normalization, source-checkout fallback, or process/runtime access.</p>
+<p><code>delete</code> accepts only a stopped, cleanup-complete run with no live process authority or resource/secret receipts, and the confirmation must equal the literal <code>PROFILE/RUN</code>. Under the exclusive profile lock it persists an owner-private canonical deletion intent bound to the run-state digest, removes only that run&#x27;s exact logs/data/cache trees, then records completion. A pending intent occupies the authoritative <code>transaction.json</code> slot as well as the exact run tombstone, so pre-checkpoint readers reject it instead of treating the run as cleanly terminal. It rolls forward after a crash; a complete intent is idempotent after descriptor-relative target-absence checks. The run state and current generation authority remain so an older or unknown deletion record fails closed and the next generation remains monotonic.</p>
+<h2 id="portable-local-core-transaction">Portable local/core transaction</h2>
+<p><code>k1s-core</code> includes an installed portable local/core adapter. Importing it, listing profiles, and planning profiles start nothing. An explicit start first probes exactly the requested engine, persists its absolute executable identity and deterministic plan digest, writes an exact current/run transaction journal, and launches components behind an activation gate. The gate opens only after exact process identity is durable. Bounded loopback readiness then advances components in controller-before-node order. Stop revalidates complete process identity and uses reverse dependency order.</p>
+<p>The layer derives versioned application roots from the four XDG base directories: <code>k1s/v1</code> below config, state, data, and cache. Explicit XDG paths must be absolute and canonical. <code>HOME</code> is required only when a base needs its standard fallback. Owned roots and run directories are mode <code>0700</code>; locks, state, logs, and generated secrets are mode <code>0600</code>. Symlinks, foreign owners, unsafe modes, traversal, and noncanonical identifiers fail closed and are never repaired with <code>chown</code> or permission widening.</p>
+<p>Each canonical profile owns a stable <code>profile.lock</code>, <code>current.json</code>, <code>transaction.json</code>, and an immutable <code>runs/r1-&lt;random-hex&gt;/</code> directory. Canonical JSON records the profile, owner UID, monotonically increasing generation and revision, exact run ID, phase, component process identities, and owned secret/resource receipts. The transaction journal records complete before/after identities for each current/run mutation. Recovery accepts only an exact before pair, an exact completed pair, or the recognized run-after/current-before intermediate pair; every other mixture fails closed. Atomic writes use owner-private same-directory temporary files, file and directory <code>fsync</code>, and reject an unsafe existing destination before replacement. Inspection is read-only: an absent profile returns absent without creating XDG directories or a lock; authoritative state without its pre-existing valid lock is an error.</p>
+<p>The durable phases are <code>preparing</code>, <code>starting</code>, <code>running</code>, <code>stopping</code>, <code>stopped</code>, <code>failed</code>, and <code>orphaned</code>, with explicit legal transitions. Process authority requires PID, process group, session, kernel boot ID, procfs start time, and executable device/inode. Stop and recovery revalidate the complete identity before every process-group signal. A reused PID or any identity mismatch is fenced as orphaned and is never signalled.</p>
+<p>Generated secrets and non-process resources carry exact run/profile ownership receipts. Cleanup uses only the recorded allowlisted handler and exact secret device/inode, in reverse resource order. Successful receipts are removed; failed and pending receipts remain for deterministic same-run retry. No glob, prefix, process scan, socket scan, or ambient backend discovery grants ownership. Logs are retained until the exact stopped-run deletion contract is invoked. State authority and its digest-bound deletion tombstone are retained; ambient pruning and broad filesystem cleanup are not supported.</p>
+<h2 id="canonical-edge-and-node-bootstrap">Canonical edge and node bootstrap</h2>
+<p>Canonical edge execution begins with one explicit owner-private bootstrap:</p>
+<pre><code>k1s profile bootstrap create edge-gateway \
+  --site-id SITE --node-id NODE --transport-url tls://HOST:PORT \
+  --credential-file /absolute/owner-private/nats.creds
+
+k1s profile bootstrap create node \
+  --node-id NODE --controller-url https://HOST:PORT \
+  --runtime-backend podman|docker --listen-host IP --listen-port PORT \
+  --advertise-endpoint https://HOST:PORT \
+  --credential-file /absolute/owner-private/token</code></pre>
+<p>The command writes one immutable canonical JSON record at the standard owner-private XDG config location and returns only its random versioned bootstrap ID plus the public role/identity/endpoint facts. There is no output path option, alias selection, <code>latest</code> pointer, directory scan, or orphan adoption. The credential input must be an absolute, owner-owned, mode-<code>0600</code>, single-link regular file opened without following symlinks. Bootstrap files and containing directories remain owner-private.</p>
+<p>Every public execution-plan digest and lifecycle result is derived solely from a secret-free projection: canonical role, bootstrap ID, identity-v1 node ID, site and endpoint facts, selected backend/listen facts, component order, engine executable identity where applicable, and installed Python executable identity. Credential bytes, credential digests, the full bootstrap-record digest, source/stored credential paths, and stored bootstrap path never enter public output, status, logs, errors, or public digests. Exact full-record digest and file identity stay only in private run state. The manager reopens and revalidates that identity before every use; private replacement or drift fails even when the public projection is unchanged.</p>
+<p><code>edge-gateway</code> launches exactly one gateway component. It has no hidden node, worker stub, engine probe, or engine-manager fallback. Its NATS credential is materialized as one exact mode-<code>0600</code> run-owned secret receipt and the child receives only that private path. <code>node</code> launches exactly one node-agent, always passes the bootstrap&#x27;s explicit identity-v1 node ID, and uses exactly the Podman or Docker executable identity selected by the bootstrap; its token is supplied only through the narrowly allowlisted child environment, which is excluded from plan repr/rendering and durable public state.</p>
+<p><code>edge</code>, <code>edge-core</code>, and <code>edge-dev</code> remain the development profile with its worker stub. They cannot create or consume a canonical gateway/node bootstrap and never enter portable dispatch.</p>
+<p>These are packaged source contracts and deterministic fakeable boundaries, not evidence of live Podman/Docker, gateway transport, or node qualification. This checkpoint uses only injected engine, process, readiness, transport, and signal boundaries in validation. Host preparation, ambient resource adoption, WorkerBee live qualification, and distributed/HA ownership remain deferred to separately reviewed checkpoints.</p>
+<h2 id="explicit-stopped-profile-migration">Explicit stopped-profile migration</h2>
+<p>Compatibility migration is an explicit, state-only transaction. It never searches <code>HOME</code>, a checkout, processes, or an XDG tree. The caller supplies one canonical absolute legacy-record directory, one canonical destination profile, and one existing owner-private versioned state root:</p>
+<pre><code>k1s profile migrate plan edge \
+  --legacy-root /absolute/legacy-records \
+  --destination-profile edge-dev \
+  --destination-root /absolute/k1s/v1/state
+
+k1s profile migrate apply edge \
+  --legacy-root /absolute/legacy-records \
+  --destination-profile edge-dev \
+  --destination-root /absolute/k1s/v1/state \
+  --expect-plan-digest sha256:...</code></pre>
+<p>Only exact stopped schema-v1 records for <code>edge</code>, <code>edge-core</code>, and <code>core-edge</code> are accepted. <code>edge</code> and <code>edge-core</code> remain development aliases of <code>edge-dev</code>; they are never promoted to canonical <code>edge-gateway</code> or <code>node</code>. <code>core-edge</code> imports canonical <code>core</code> stopped composition evidence for <code>controller</code> plus <code>nats-core</code>; it never promotes <code>core-ha</code>. Any process identity observed for the recorded PID, including a reused PID, is an active conflict. Inspector ambiguity also fails closed, and migration never signals or adopts that PID.</p>
+<p><code>plan</code> is byte-for-byte nonmutating: it creates no destination directory or lock. <code>apply</code> revalidates the source and PID immediately before mutation, then creates only the exact state authority needed for an imported clean stopped run, an immutable receipt, and a distinct migration journal. Imported component records are historical stopped-composition evidence, not claims that K-P1-3 started or owned a legacy process. Config, data, cache, logs, secrets, and process state are untouched.</p>
+<p>The apply journal recognizes only its exact before state and each ordered receipt/run/current prefix. While it is pending, public planning and ordinary lifecycle readers fail closed; an identical digest-bound apply is the only roll-forward path. Rollback requires the exact migration ID, original applied receipt digest, and <code>PROFILE/RUN_ID</code> confirmation. It removes only the exact imported current/run objects, retains the legacy source, and replaces the receipt with an immutable rolled-back audit record. Replaying rollback is accepted only with the original applied-receipt digest. A directory is removed only when its exact recorded migration-created identity still matches; an empty directory alone is not ownership evidence. Drift, later generations, foreign files, symlinks, hardlinks, unsafe modes, malformed records, and unknown transaction states all fail closed.</p>
+<p>The migration command is installed and offline-safe but is not a live-runtime qualification claim. It performs no backend, network, service, host, certificate, or WorkerBee action.</p>
+    </div>
+    <footer class="site-footer">
+      <div class="container inner">
+        <span>k1s Documentation</span>
+        <span class="spacer"></span>
+        <button id="api-mode-toggle">API Mode</button>
+        <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
+        <span>Built 2026-11-10 19:43:38</span>
+      </div>
+    </footer>
+    <script>
+      (function() {
+        var btn = document.getElementById('api-mode-toggle');
+        if (!btn) return;
+        function label() {
+          var mode = localStorage.getItem('docsApiMode') || 'proxy';
+          btn.textContent = (mode === 'direct') ? 'API Mode: Direct' : 'API Mode: Proxy';
+          var lab = document.getElementById('api-mode-label');
+          if (lab) {
+            if (mode === 'direct') {
+              var base = (window.DOCS_API_BASE||'').trim() || '(unset)';
+              lab.textContent = ' [' + base + ']';
+            } else {
+              lab.textContent = ' (proxy)';
+            }
+          }
+        }
+        btn.addEventListener('click', function() {
+          var cur = localStorage.getItem('docsApiMode') || 'proxy';
+          var next = (cur === 'direct') ? 'proxy' : 'direct';
+          localStorage.setItem('docsApiMode', next);
+          label();
+          if (location.pathname.endsWith('playground.html')) location.reload();
+        });
+        label();
+      })();
+    </script>
+    <script>
+      (function() {
+        function hideLinks(match) {
+          var links = document.querySelectorAll('a[href]');
+          links.forEach(function(a) {
+            var href = a.getAttribute('href') || '';
+            if (match(href)) { a.style.display = 'none'; }
+          });
+        }
+        function rewriteDashboardLinks(target) {
+          if (!target) return;
+          var links = document.querySelectorAll('a[href]');
+          links.forEach(function(a) {
+            var href = a.getAttribute('href') || '';
+            if (href.indexOf('/dashboard') === 0) {
+              a.setAttribute('href', target);
+              if (!a.getAttribute('target')) {
+                a.setAttribute('target', '_blank');
+                a.setAttribute('rel', 'noopener');
+              }
+            }
+          });
+        }
+        function disablePlaygroundPage() {
+          var path = (location && location.pathname) ? location.pathname : '';
+          if (!/playground/i.test(path)) return;
+          var container = document.querySelector('.container');
+          if (container) container.style.display = 'none';
+          var msg = document.createElement('div');
+          msg.style.maxWidth = '960px';
+          msg.style.margin = '32px auto';
+          msg.style.padding = '16px 20px';
+          msg.style.border = '1px solid var(--border)';
+          msg.style.borderRadius = '12px';
+          msg.style.background = 'var(--k1s-panel)';
+          msg.style.color = 'var(--k1s-text)';
+          msg.innerHTML = '<h2 style="margin:0 0 8px">Playground disabled</h2>' +
+            '<p style="margin:0;color:var(--k1s-text-muted)">This environment has disabled the interactive playground. Enable AE_PLAYGROUND=1 on the controller to re-enable it.</p>';
+          document.body.insertBefore(msg, document.body.firstChild);
+        }
+        fetch('/ui/features', { credentials: 'same-origin' })
+          .then(function(r) { return r.ok ? r.json() : null; })
+          .then(function(f) {
+            if (!f) return;
+            if (f.dashboard === false) {
+              hideLinks(function(h) { return h.indexOf('/dashboard') !== -1; });
+            } else {
+              var dashUrl = (window.DOCS_DASHBOARD_URL || '').trim();
+              rewriteDashboardLinks(dashUrl);
+            }
+            if (f.playground === false) {
+              hideLinks(function(h) { return h.indexOf('playground') !== -1; });
+              disablePlaygroundPage();
+            }
+          })
+          .catch(function() {});
+      })();
+    </script>
+  </body>
+</html>

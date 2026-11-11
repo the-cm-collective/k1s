@@ -80,7 +80,7 @@ def test_distribution_identity_preserves_import_and_commands() -> None:
     assert "version" not in data["project"]
     assert "version" in data["project"]["dynamic"]
     assert data["tool"]["setuptools"]["dynamic"]["version"] == {"attr": "ae.__version__"}
-    assert read_project_version(PYPROJECT) == "1.0.0a3"
+    assert read_project_version(PYPROJECT) == "1.0.0"
     assert data["project"]["scripts"] == {
         "ae": "ae.cli.__main__:main",
         "ae-rotate-certs": "ae.cli.rotate_certs:main",
@@ -256,16 +256,31 @@ def test_ci_artifact_job_is_nonpublishing_and_uses_only_the_helper() -> None:
 
 
 def test_release_documentation_records_v1_alpha_compatibility() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
     versioning = (ROOT / "VERSIONING.md").read_text(encoding="utf-8")
     distribution = (ROOT / "docs" / "reference" / "python-distribution.md").read_text(
         encoding="utf-8"
     )
+    readme_words = " ".join(readme.split())
+    versioning_words = " ".join(versioning.split())
+    distribution_words = " ".join(distribution.split())
     assert "0.1.8a1" in versioning
     assert "1.0.0a3" in versioning
+    assert "1.0.0rc1" in versioning
+    assert "1.0.0" in versioning
     assert "distribution name to `k1s-core`" in versioning
     assert "1.0 alpha compatibility contract" in versioning
     assert "Python imports remain under `ae`" in distribution
-    assert "current\nPEP 440 candidate" in distribution
+    assert "current\nstable PEP 440 source identity" in distribution
+    assert "python -m pip install k1s-core" in readme
+    assert "python -m pip install 'k1s-core==1.0.0'" in readme
+    assert "python -m pip install k1s-core" in distribution
+    assert "immutable local annotated `v1.0.0rc1` tag" in versioning_words
+    assert "immutable local annotated `v1.0.0rc1` tag" in distribution_words
+    assert "RC1 was not published to a package index" in versioning_words
+    assert "not evidence of package-index" in distribution_words
+    assert "qualified through the 1.0 release-candidate train" in readme_words
+    assert "package stability does not replace operational acceptance" in readme_words
     assert "Production never rebuilds" in distribution
     assert PROTECTED_PATHS.isdisjoint(distribution.splitlines())
 
@@ -363,6 +378,23 @@ def _write_wheel(path: Path, *, unsafe_name: str | None = None) -> None:
     }
     if unsafe_name is not None:
         payloads[unsafe_name] = b"unsafe"
+    payloads[record] = _wheel_record(payloads, record)
+    with zipfile.ZipFile(path, "w") as archive:
+        for name in reversed(list(payloads)):
+            archive.writestr(name, payloads[name])
+
+
+def _write_current_wheel(path: Path) -> None:
+    version = "1.0.0"
+    dist_info = f"k1s_core-{version}.dist-info"
+    record = f"{dist_info}/RECORD"
+    payloads = {
+        "ae/__init__.py": f'__version__ = "{version}"\n'.encode(),
+        f"{dist_info}/METADATA": (
+            f"Metadata-Version: 2.4\nName: k1s-core\nVersion: {version}\n\n".encode()
+        ),
+        f"{dist_info}/WHEEL": b"Wheel-Version: 1.0\nTag: py3-none-any\nRoot-Is-Purelib: true\n\n",
+    }
     payloads[record] = _wheel_record(payloads, record)
     with zipfile.ZipFile(path, "w") as archive:
         for name in reversed(list(payloads)):
@@ -668,18 +700,19 @@ def _create_valid_bundle(root: Path) -> Path:
 
     raw = root / "raw"
     raw.mkdir()
-    raw_wheel = raw / "k1s_core-1.0.0a3-py3-none-any.whl"
-    _write_wheel(raw_wheel)
+    version = "1.0.0"
+    raw_wheel = raw / f"k1s_core-{version}-py3-none-any.whl"
+    _write_current_wheel(raw_wheel)
     normalize_wheel(
         raw_wheel,
         dist / raw_wheel.name,
         epoch=1793664000,
         distribution="k1s-core",
-        version="1.0.0a3",
+        version=version,
     )
-    raw_sdist = raw / "k1s_core-1.0.0a3.tar.gz"
+    raw_sdist = raw / f"k1s_core-{version}.tar.gz"
     with tarfile.open(raw_sdist, "w:gz") as archive:
-        info = tarfile.TarInfo("k1s_core-1.0.0a3/payload.txt")
+        info = tarfile.TarInfo(f"k1s_core-{version}/payload.txt")
         info.size = len(payload)
         info.mode = 0o600
         archive.addfile(info, io.BytesIO(payload))
@@ -688,7 +721,7 @@ def _create_valid_bundle(root: Path) -> Path:
         dist / raw_sdist.name,
         epoch=1793664000,
         distribution="k1s-core",
-        version="1.0.0a3",
+        version=version,
         source_members=source_members,
     )
     write_bundle_metadata(
@@ -718,8 +751,8 @@ def _read_bundle_manifest(bundle: Path) -> dict[str, object]:
 def _rewrite_sha256sums(bundle: Path) -> None:
     relative_files = (
         "artifact-manifest.json",
-        "dist/k1s_core-1.0.0a3-py3-none-any.whl",
-        "dist/k1s_core-1.0.0a3.tar.gz",
+        "dist/k1s_core-1.0.0-py3-none-any.whl",
+        "dist/k1s_core-1.0.0.tar.gz",
         "manifests/sdist-members.jsonl",
         "manifests/source-members.jsonl",
         "manifests/wheel-members.jsonl",
@@ -857,8 +890,8 @@ def test_bundle_verifier_rejects_extra_filesystem_entries(tmp_path: Path, entry_
     [
         "artifact-manifest.json",
         "SHA256SUMS",
-        "dist/k1s_core-1.0.0a3-py3-none-any.whl",
-        "dist/k1s_core-1.0.0a3.tar.gz",
+        "dist/k1s_core-1.0.0-py3-none-any.whl",
+        "dist/k1s_core-1.0.0.tar.gz",
         "manifests/source-members.jsonl",
         "manifests/wheel-members.jsonl",
         "manifests/sdist-members.jsonl",

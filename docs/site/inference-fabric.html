@@ -834,7 +834,7 @@
 <li>disconnected-operation intent under <code>cellContract.autonomy</code></li>
 <li>LAN-local gateway discovery intent under <code>cellContract.gatewayDiscovery</code></li>
 <li>NixOS installer signing and boot assurance intent under <code>cellContract.installer</code></li>
-<li>AI governance evidence intent for the Nigerian-language translation use case under <code>cellContract.governanceEvidence</code></li>
+<li>application-neutral AI governance evidence intent under <code>cellContract.governanceEvidence</code></li>
 </ul>
 <p>The autonomy block is intentionally declarative in the current repo. It gives simulators, manifest validators, and later controller work stable names for the edge behavior without claiming full runtime enforcement today:</p>
 <pre><code>cellContract:
@@ -948,41 +948,41 @@
           usbDevicePolicy: limited
           displayMode: connect-monitor-to-gateway
   governanceEvidence:
-    useCase: nigerian-language-translation
+    useCase: multilingual-translation-validation
     readiness: governance-evidence-ready
     datasetCard:
-      datasetId: ng-translation-public-demo-v1
-      name: Nigerian language translation public demo corpus
-      languages: [ha, ig, yo, en]
-      domain: public-service-local-domain
-      dataResidency: NG-local-lab
-      classification: public-demo
+      datasetId: multilingual-demo-v1
+      name: Multilingual translation validation corpus
+      languages: [lang-a, lang-b, en]
+      domain: local-validation
+      dataResidency: operator-selected-local-region
+      classification: synthetic-demo
       consentLawfulBasis: placeholder-consent-lawful-basis
       retentionDeletionMarker: stage15-retention-delete-marker
     modelCard:
-      modelId: ng-translation-ai-max-stage15
-      name: Nigerian language translation model
+      modelId: multilingual-translation-stage15
+      name: Multilingual translation validation model
       version: stage15-local-v1
       task: translation
-      languages: [ha, ig, yo, en]
+      languages: [lang-a, lang-b, en]
       baseModelRef: models/llama:stage11-local
-      artifactRef: models/ng-translation:stage15-local
+      artifactRef: models/multilingual-translation:stage15-local
       owner: k1s-public-ai-governance
       operator: k1s-edge-operator
     evalReport:
-      benchmarkRef: benchmarks/ng-translation-stage15
-      evalSetRef: evalsets/ng-translation-local-v1
+      benchmarkRef: benchmarks/multilingual-translation-stage15
+      evalSetRef: evalsets/multilingual-translation-local-v1
       metrics:
         chrf: 0.62
         semantic_adequacy: 0.81
         toxicity_pass_rate: 0.99
       approvalThreshold: 0.8
       passed: true
-      localDomainNote: Nigerian-language local-domain simulation only
+      localDomainNote: synthetic local-domain simulation only
     riskAssessment:
       riskLevel: medium
       humanOversight: true
-      biasNote: bias review required for Hausa Igbo Yoruba English
+      biasNote: bias review required for every configured language and domain
       fairnessNote: fairness checks tracked by language and domain
       securityNote: prompt and data handling reviewed locally
       mitigationStatus: mitigations-documented
@@ -990,7 +990,7 @@
       approverRole: ai-governance-reviewer
       approvedAt: &quot;2026-06-25T00:00:00Z&quot;
       releaseGate: stage15-governance-evidence-ready
-      rollbackRef: rollback/ng-translation-stage15
+      rollbackRef: rollback/multilingual-translation-stage15
     rollbackRecord:
       trigger: quality-regression-or-governance-review
       previousVersion: stage14-local-v0
@@ -1007,7 +1007,7 @@
 <li>validates a local Stage 9 boot evidence verifier scaffold for gateway and cell-node roles, including installer profile/image, artifact and manifest digests, simulated boot measurement digest, trust root, nonce, timestamp, and verified result</li>
 <li>enforces local Stage 10 boot assurance semantics during stage placement when member-level <code>bootAssurance</code> is present: verified members remain schedulable, while failed, tampered, or unverified members are marked quarantined, excluded from placement capacity, and reported with deterministic failure reasons and alert state</li>
 <li>provides a Stage 11 local autonomy state machine for AI Max edge cells, transitioning through <code>connected</code>, <code>core-link-unavailable</code>, <code>degraded-local-only</code>, <code>reconciling</code>, and <code>reconciled</code> with deterministic gateway cache intent and transition traces</li>
-<li>validates a Stage 15 local AI governance evidence bundle for the Nigerian-language translation use case, including dataset/model cards, eval report metrics and thresholds, risk assessment, approval gate, and rollback/retirement marker</li>
+<li>validates a Stage 15 local AI governance evidence bundle, including dataset/model cards, evaluation metrics and thresholds, risk assessment, approval gate, and rollback/retirement marker</li>
 <li>validates post-install posture for gateway and cell-node paths, including auto-boot, role-specific connect targets, constrained USB policy, and display mode</li>
 <li>constrains <code>coreLinkUptimeThresholdPct</code> to <code>0..80</code></li>
 <li>keeps the gateway compute eligible while letting reservation affect placement planning</li>
@@ -1025,7 +1025,7 @@
 <li><code>bootEvidence</code> is the Stage 9 local verifier surface. It makes the boot evidence acceptance/rejection contract executable in unit tests without claiming real TPM quote, Secure Boot event log, or hardware attestation verification.</li>
 <li>member-level <code>bootAssurance</code> is the Stage 10 local enforcement surface. It lets unit tests represent verified/schedulable nodes and quarantined failed/tampered/unverified nodes, and the stage planner excludes quarantined members from simulated placement capacity.</li>
 <li>the autonomy state machine is the Stage 11 state-machine-ready surface. It turns the declarative autonomy names into deterministic local transitions and cache state, but does not run an outage/probe drill.</li>
-<li><code>governanceEvidence</code> is the Stage 15 governance-evidence-ready surface. It makes dataset/model/eval/risk/approval/rollback evidence executable in local tests for the Nigerian-language translation model use case. It is not a legal compliance determination, external approval workflow, production audit store, or model governance platform.</li>
+<li><code>governanceEvidence</code> is the Stage 15 governance-evidence-ready surface. It makes dataset/model/eval/risk/approval/rollback evidence executable in local tests using application-neutral fixture data. It is not a legal compliance determination, external approval workflow, production audit store, or model governance platform.</li>
 <li><code>secureImageValidation</code>, <code>bootValidation</code>, <code>tamperDetection</code>, <code>validationFailureAction</code>, and <code>coreAlerting</code> are declarative assurance requirements for later installer, TPM/Secure Boot, attestation, and alerting enforcement</li>
 </ul>
 <p>This is contract-level behavior only. It does not yet implement disconnected gateway execution, local service failover, live LAN discovery, multi-cell routing, post-reconnect state replay, actual ISO build/signing, TPM/Secure Boot enforcement, attestation verification, USB policy enforcement, real key custody, production ISO signing, real NixOS image realization, TPM quote verification, Secure Boot event log verification, hardware attestation, real kubelet/node admission control, TPM-backed enforcement, Stage 12 outage/probe drills, or hardened alert transport. Stage 15 also does not complete legal compliance, consent verification, data protection review, external governance integration, or production release approval.</p>
@@ -1163,7 +1163,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-07-23 23:44:31</span>
+        <span>Built 2026-11-10 19:43:38</span>
       </div>
     </footer>
     <script>
