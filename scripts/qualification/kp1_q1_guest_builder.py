@@ -426,7 +426,7 @@ chmod 0644 /opt/k1s-q1/kp1_q1_bundle.py
   --requirement "$PAYLOAD_ROOT/q1/wheelhouse/requirements-release.lock"
 /opt/k1s-q1/venv/bin/pip install \
   --disable-pip-version-check --no-cache-dir --no-compile --no-index --no-deps \
-  "$PAYLOAD_ROOT/q1/accepted/k1s_core-1.0.0a3-py3-none-any.whl"
+  "$PAYLOAD_ROOT/q1/accepted/k1s_core-1.0.0rc1-py3-none-any.whl"
 
 mv "$PAYLOAD_ROOT" /opt/k1s-q1/offline
 quiesce_mutable_services

@@ -590,7 +590,7 @@ def build(args: argparse.Namespace) -> dict[str, object]:
             source_manifest=source_manifest,
         )
         version = read_project_version(source / "pyproject.toml")
-        if version != "1.0.0a3":
+        if version != "1.0.0rc1":
             raise BuildPolicyError("project version differs from the frozen release identity")
         if args.source_date_epoch != CANONICAL_SOURCE_DATE_EPOCH:
             raise BuildPolicyError("SOURCE_DATE_EPOCH differs from policy")

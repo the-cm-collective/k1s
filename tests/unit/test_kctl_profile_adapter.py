@@ -33,7 +33,7 @@ class _StaticProbe:
             python_version=(3, 11),
             platform="linux",
             ae_importable=True,
-            distribution_version="1.0.0a3",
+            distribution_version="1.0.0rc1",
             k1s_console_present=True,
         )
 
@@ -286,7 +286,7 @@ def test_wp01_same_runtime_consumer_fixture_covers_all_six_operations() -> None:
     assert {
         item["provenance"]["distributionVersion"]  # type: ignore[index]
         for item in retained_w4
-    } == {"1.0.0a3"}
+    } == {"1.0.0rc1"}
     retained_text = json.dumps(retained_w4_set, ensure_ascii=False, sort_keys=True)
     for forbidden in (
         "private value",
@@ -710,7 +710,7 @@ def test_source_mode_exit_descriptor_and_operation_fail_closed() -> None:
 def test_evidence_identity_known_answer_and_canonical_bytes() -> None:
     evidence = _adapt("status", _status())
     assert evidence["evidenceId"] == (
-        "sha256:43da717ef70594970852884386470b761e23d959adddbc751049f56fe5c61a21"
+        "sha256:410318cbe0a7b85c497792afcebb88a02b2e91904f871a5c369fb870249e8476"
     )
     rendered = render_workerbee_profile_evidence_json(evidence)
     assert rendered.endswith("\n") and not rendered.endswith("\n\n")
@@ -774,7 +774,7 @@ def test_schema_constants_and_provenance_are_exact() -> None:
     assert evidence["provenance"] == {
         "adapterApiVersion": ADAPTER_API_VERSION,
         "distribution": "k1s-core",
-        "distributionVersion": "1.0.0a3",
+        "distributionVersion": "1.0.0rc1",
         "sourceApiVersion": "k1s.dev/v1alpha1",
         "sourceExitCode": 0,
         "sourceKind": "ProfileCatalog",

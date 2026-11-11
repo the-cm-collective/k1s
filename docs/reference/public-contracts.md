@@ -1,11 +1,15 @@
 # Public Contract Inventory
 
-K1s is in its 1.0 alpha line. This inventory is the public compatibility
+K1s is in its 1.0 release-candidate line. This inventory is the public compatibility
 boundary for `1.0.0a1` and its `1.0.0a2`/`1.0.0a3` publication corrections: it
 distinguishes release-gated surfaces from experimental features that may change
 between pre-releases. The status
 vocabulary is deliberately limited to **stable** and **experimental** so tests
 can detect an undocumented public-surface change.
+
+`1.0.0rc1` is a pre-release source and artifact identity. It does not make an
+experimental surface stable or assert that deferred live runtime, provider,
+deployment, WorkerBee/MCP, or publication gates have passed.
 
 ## Stable compatibility surfaces
 

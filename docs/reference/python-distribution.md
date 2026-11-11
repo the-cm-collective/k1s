@@ -120,20 +120,21 @@ the synthetic facts describe a live host.
 ## Version posture
 
 The `v0.1.7` tag and changelog establish the latest stable lineage. `0.1.8a1`
-introduced the `k1s-core` distribution transition, and `1.0.0a3` is the current
-PEP 440 candidate. The alpha begins the public compatibility contract in
-`public-contracts.md`; it does not make experimental surfaces stable or claim
-broad production readiness.
+introduced the `k1s-core` distribution transition, and `1.0.0rc1` is the
+current PEP 440 release-candidate source identity. The alpha established the
+public compatibility contract in `public-contracts.md`; RC1 does not make
+experimental surfaces stable or claim broad production readiness.
 
 The accepted implementation baseline completed source and synthetic checks for
 the isolated Q1 capsule, conductor, teardown, and replay contracts before this
 version transition. It did not complete live disposable-guest CRI/containerd,
-provider, deployment, or appliance qualification. The `1.0.0a3` artifacts are
+provider, deployment, or appliance qualification. The `1.0.0rc1` artifacts are
 rebuilt from their own immutable commit and must pass deterministic two-lane,
 strict installed-artifact, and publication review gates. The K1 review at
 `c9178a5235b695784ed839f31901d476afdd6a98` qualifies the WorkerBee v1 wire and
 pure same-runtime consumer fixture; live W4 acquisition/channel binding and
-combined K1s/WorkerBee qualification remain required before RC promotion.
+combined K1s/WorkerBee qualification remain required before publication or
+stable promotion.
 
 The canonical runtime version is the literal `ae.__version__` in
 `src/ae/__init__.py`. Setuptools reads that literal as dynamic distribution

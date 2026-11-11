@@ -248,6 +248,10 @@ locked W-P0-1 consumer design. It does not qualify the live MCP transport,
 authenticate the provider process, authorize bootstrap creation, or replace
 the combined disposable-guest qualification gate.
 
+The RC1 source checkpoint preserves that exact v1 wire contract. A current
+`1.0.0rc1` same-runtime replay is required before its evidence can be accepted
+for RC review; this source update alone is not an RC qualification claim.
+
 ## Compatibility and qualification boundary
 
 V1 rejects unknown fields and versions; consumers do not ignore additive

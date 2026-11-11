@@ -26,7 +26,8 @@ def test_public_project_metadata_is_canonical_and_supported() -> None:
         "Changelog": "https://github.com/the-cm-collective/k1s/blob/main/CHANGELOG.md",
     }
     classifiers = set(project["classifiers"])
-    assert "Development Status :: 3 - Alpha" in classifiers
+    assert "Development Status :: 4 - Beta" in classifiers
+    assert "Development Status :: 3 - Alpha" not in classifiers
     assert "Operating System :: POSIX :: Linux" in classifiers
     assert "Programming Language :: Python :: 3.11" in classifiers
     assert "Programming Language :: Python :: 3.12" in classifiers
@@ -47,17 +48,17 @@ def test_ae_version_is_the_single_authoritative_literal(tmp_path: Path) -> None:
     data = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
     assert "version" not in data["project"]
     assert data["tool"]["setuptools"]["dynamic"]["version"] == {"attr": "ae.__version__"}
-    assert read_project_version(PYPROJECT) == "1.0.0a3"
+    assert read_project_version(PYPROJECT) == "1.0.0rc1"
 
     root = tmp_path / "project"
     (root / "src" / "ae").mkdir(parents=True)
     copied = root / "pyproject.toml"
     shutil.copy2(PYPROJECT, copied)
     shutil.copy2(ROOT / "src" / "ae" / "__init__.py", root / "src" / "ae" / "__init__.py")
-    source = write_project_version(copied, "1.0.0a4.dev0")
+    source = write_project_version(copied, "1.0.0rc2.dev0")
     assert source == root / "src" / "ae" / "__init__.py"
-    assert read_project_version(copied) == "1.0.0a4.dev0"
-    assert "1.0.0a3" not in source.read_text(encoding="utf-8")
+    assert read_project_version(copied) == "1.0.0rc2.dev0"
+    assert "1.0.0rc1" not in source.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize(

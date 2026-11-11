@@ -83,10 +83,10 @@ def _fixture(
     spec: dict[str, object] = {
         "apiVersion": acquisition.API_VERSION,
         "kind": acquisition.SPEC_KIND,
-        "outputName": "qh5b-b1-1.0.0a3-11111111-20261109T162500Z",
+        "outputName": "qh5b-b1-1.0.0rc1-11111111-20261109T162500Z",
         "outputParent": str(parent),
         "schemaVersion": acquisition.SCHEMA_VERSION,
-        "source": {"commit": "1" * 40, "tree": "2" * 40, "version": "1.0.0a3"},
+        "source": {"commit": "1" * 40, "tree": "2" * 40, "version": "1.0.0rc1"},
         "tools": tools,
         "transaction": {
             "expectedSha256": _digest(transaction_raw),

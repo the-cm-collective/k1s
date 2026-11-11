@@ -14,16 +14,16 @@ Project principles and non-goals: `TENETS.md`. Cognitive-substrate philosophy an
 
 ## Status & Production Use
 
-k1s is entering its 1.0 alpha line and remains actively evolving. The current
-candidate establishes a locally tested source, synthetic, and installed-artifact
+k1s is entering its 1.0 release-candidate line and remains actively evolving.
+The current candidate establishes a locally tested source, synthetic, and installed-artifact
 compatibility boundary for the distribution, imports, commands, and metadata-safe
 WorkerBee evidence contract. It does not qualify live WorkerBee/MCP transport,
 CRI/containerd operation, provider or deployment integration, appliance behavior,
 or package publication; those remain explicit review gates.
 
-The latest stable release remains `0.1.7`. `1.0.0a3` is the current local
-non-release review candidate; pre-RC1 review branches and markers do not promote
-it to `1.0.0rc1` or grant publication authority.
+The latest stable release remains `0.1.7`. `1.0.0rc1` is the current local
+release-candidate source checkpoint; it is not a release tag, published package,
+or grant of publication authority.
 
 Production guidance:
 - Recommended now: source review, labs, staging, and explicitly scoped pilots only
@@ -86,7 +86,7 @@ python -m pip install -e .[dev]
 Published Python artifacts use the distribution name `k1s-core`. The runtime
 package remains importable as `ae`, and the `k1s` and historical `ae*` command
 entry points remain available. See `docs/reference/python-distribution.md` and
-`docs/reference/public-contracts.md` for the 1.0-alpha compatibility policy.
+`docs/reference/public-contracts.md` for the 1.0 pre-release compatibility policy.
 
 Optional: add file-watching support for instant reconciles on spec changes:
 

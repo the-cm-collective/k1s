@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 1.0.0rc1 - 2026-11-11
+
+### Changed
+- Promoted the exact locally reviewed alpha source identity to the `1.0.0rc1`
+  release-candidate checkpoint without declaring stable `1.0`,
+  publishing artifacts, or qualifying any deferred live boundary.
+- Rebound the canonical artifact and isolated-Q1 candidate identities to RC1
+  while preserving immutable alpha evidence and deliberately old negative
+  fixtures.
+
 ### Documentation
 - Clarified that the pre-RC1 review branch and annotated marker are non-release
   references and do not change the package version or grant publication

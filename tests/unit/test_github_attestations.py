@@ -21,8 +21,8 @@ def _bundle(root: Path) -> Path:
     for relative in (
         "artifact-manifest.json",
         "SHA256SUMS",
-        "dist/k1s_core-1.0.0a3-py3-none-any.whl",
-        "dist/k1s_core-1.0.0a3.tar.gz",
+        "dist/k1s_core-1.0.0rc1-py3-none-any.whl",
+        "dist/k1s_core-1.0.0rc1.tar.gz",
         "manifests/source-members.jsonl",
         "manifests/wheel-members.jsonl",
         "manifests/sdist-members.jsonl",
@@ -98,8 +98,8 @@ def test_verifier_calls_github_cli_once_per_exact_subject(tmp_path: Path) -> Non
         "status": "verified",
         "subjectCount": 7,
         "subjects": [
-            "dist/k1s_core-1.0.0a3-py3-none-any.whl",
-            "dist/k1s_core-1.0.0a3.tar.gz",
+            "dist/k1s_core-1.0.0rc1-py3-none-any.whl",
+            "dist/k1s_core-1.0.0rc1.tar.gz",
             "artifact-manifest.json",
             "SHA256SUMS",
             "manifests/source-members.jsonl",
@@ -151,7 +151,7 @@ def test_verifier_stops_on_first_failed_subject(tmp_path: Path) -> None:
     assert "artifact-manifest.json: exit 17" in result.stderr
     calls = _calls(log)
     assert [Path(call[2]).name for call in calls] == [
-        "k1s_core-1.0.0a3-py3-none-any.whl",
-        "k1s_core-1.0.0a3.tar.gz",
+        "k1s_core-1.0.0rc1-py3-none-any.whl",
+        "k1s_core-1.0.0rc1.tar.gz",
         "artifact-manifest.json",
     ]
