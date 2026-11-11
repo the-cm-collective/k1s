@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="https://raw.githubusercontent.com/the-cm-collective/k1s/main/media/style/web-logos/k1s-killa-bee-refresh-0526.png" alt="k1s logo" width="260" />
-</p>
+![k1s logo](https://raw.githubusercontent.com/the-cm-collective/k1s/main/media/style/web-logos/k1s-killa-bee-refresh-0526.png)
 
 # k1s Minimal Application Engine
 
@@ -14,22 +12,26 @@ Project principles and non-goals: `TENETS.md`. Cognitive-substrate philosophy an
 
 ## Status & Production Use
 
-k1s is entering its 1.0 release-candidate line and remains actively evolving.
-The current candidate establishes a locally tested source, synthetic, and installed-artifact
-compatibility boundary for the distribution, imports, commands, and metadata-safe
-WorkerBee evidence contract. It does not qualify live WorkerBee/MCP transport,
-CRI/containerd operation, provider or deployment integration, appliance behavior,
-or package publication; those remain explicit review gates.
+k1s `1.0.0` establishes the stable Python distribution, import, command, profile,
+artifact, and metadata-safe WorkerBee evidence contracts qualified through the
+1.0 release-candidate train. Environment-specific runtime, CRI/containerd,
+provider, appliance, and deployment behavior still requires explicit local
+validation; package stability does not replace operational acceptance.
 
-The latest stable release remains `0.1.7`. `1.0.0rc2` is the current
-release-candidate source identity undergoing exact artifact and package-index
-qualification. The immutable local annotated `v1.0.0rc1` tag identifies the
-prior source checkpoint; it is not evidence of a published package,
-deployment, live qualification, or publication authority.
+Install the stable package from PyPI:
+
+```text
+python -m pip install k1s-core
+k1s --help
+```
+
+Use `python -m pip install 'k1s-core==1.0.0'` when the environment must pin
+the exact stable release.
 
 Production guidance:
-- Recommended now: source review, labs, staging, and explicitly scoped pilots only
-  after environment-specific live validation and with explicit operator ownership.
+- Recommended now: installed-package use, source review, labs, staging, and
+  explicitly scoped deployments after environment-specific live validation and
+  with explicit operator ownership.
 - Not yet recommended: broad multi-tenant or compliance-critical environments that require full Kubernetes semantics.
 - Always run environment-specific security review, failure drills, and rollout validation before promotion.
 

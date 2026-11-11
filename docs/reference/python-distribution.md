@@ -144,22 +144,25 @@ the synthetic facts describe a live host.
 
 ## Version posture
 
-The `v0.1.7` tag and changelog establish the latest stable lineage. `0.1.8a1`
-introduced the `k1s-core` distribution transition, and `1.0.0rc2` is the
-current PEP 440 release-candidate source identity. The alpha established the
-public compatibility contract in `public-contracts.md`; RC2 does not make
-experimental surfaces stable or claim broad production readiness.
+The `v0.1.7` tag and changelog establish the earlier stable lineage. `0.1.8a1`
+introduced the `k1s-core` distribution transition, and `1.0.0` is the current
+stable PEP 440 source identity. The alpha established the public compatibility
+contract in `public-contracts.md`; stable 1.0 does not make experimental
+surfaces stable or claim broad production readiness.
 
 The immutable local annotated `v1.0.0rc1` tag identifies the exact reviewed
 prior source checkpoint. RC1 was not published, and that local tag is not
 evidence of package-index publication, deployment, live qualification, or
 stable promotion.
 
+The published `1.0.0rc2` artifacts completed exact-candidate promotion and
+clean installed-package qualification before the stable version transition.
+
 The accepted implementation baseline completed source and synthetic checks for
 the isolated Q1 capsule, conductor, teardown, and replay contracts before this
 version transition. It did not complete live disposable-guest CRI/containerd,
-provider, deployment, or appliance qualification. The `1.0.0rc2` artifacts are
-rebuilt from their own immutable commit and must pass deterministic two-lane,
+provider, deployment, or appliance qualification. The `1.0.0` artifacts are
+built from their own immutable commit and must pass deterministic two-lane,
 strict installed-artifact, and publication review gates. The K1 review at
 `c9178a5235b695784ed839f31901d476afdd6a98` qualifies the WorkerBee v1 wire and
 pure same-runtime consumer fixture; live W4 acquisition/channel binding and

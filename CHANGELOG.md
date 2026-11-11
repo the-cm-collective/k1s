@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 1.0.0 - 2026-11-11
+
+### Added
+- Published the stable `k1s-core` distribution with the `k1s`, `ae`,
+  `ae-rotate-certs`, `ae-node`, `ae-gateway`, and `ae-worker-stub` commands and
+  the established `ae` Python import compatibility surface.
+
+### Changed
+- Promoted the exact artifact, installed-package, profile-inspection, public
+  contract, and WorkerBee provider identities qualified by the RC2 train to the
+  stable `1.0.0` package identity.
+- Retained environment-specific live runtime and deployment qualification as
+  explicit operator acceptance rather than implying it from package stability.
+
 ## 1.0.0rc2 - 2026-11-11
 
 ### Changed

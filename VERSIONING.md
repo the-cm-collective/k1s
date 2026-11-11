@@ -69,13 +69,15 @@ git push origin v0.1.0
 - `1.0.0rc1` is an immutable local release-candidate source checkpoint. The
   immutable local annotated `v1.0.0rc1` tag identifies that exact checkpoint;
   RC1 was not published to a package index.
-- `1.0.0rc2` is the current release-candidate source identity. It separates the
-  qualified post-RC1 documentation and contract updates from RC1's immutable
-  source and artifact identity. It does not prove package-index publication,
-  live WorkerBee/MCP or CRI/containerd qualification, provider integration,
-  deployment authority, or stable promotion. Stable `1.0.0` remains gated by
-  exact-candidate publication and the outstanding combined live qualification
-  gates.
+- `1.0.0rc2` is the published release-candidate identity that completed exact
+  TestPyPI/PyPI artifact promotion and clean installed-package qualification
+  with `k1s-workerbee==1.0.0rc2`.
+- `1.0.0` promotes the qualified distribution, import, command, profile,
+  artifact, and metadata-safe WorkerBee evidence contracts to the stable
+  package identity. Environment-specific WorkerBee/MCP, CRI/containerd,
+  provider, appliance, and deployment acceptance remains an operational gate;
+  the stable package version does not claim that every deployment topology has
+  been exercised.
 - The WorkerBee profile evidence adapter is an experimental v1 wire contract
   within `k1s-core`; its `v1` schema identifier does not declare K1s 1.0 API
   stability. Unknown fields/versions fail closed. The K1 review at
