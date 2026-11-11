@@ -7,7 +7,7 @@ between pre-releases. The status
 vocabulary is deliberately limited to **stable** and **experimental** so tests
 can detect an undocumented public-surface change.
 
-`1.0.0rc1` is a pre-release source and artifact identity. It does not make an
+`1.0.0rc2` is a pre-release source and artifact identity. It does not make an
 experimental surface stable or assert that deferred live runtime, provider,
 deployment, WorkerBee/MCP, or publication gates have passed.
 

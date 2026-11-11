@@ -145,19 +145,20 @@ the synthetic facts describe a live host.
 ## Version posture
 
 The `v0.1.7` tag and changelog establish the latest stable lineage. `0.1.8a1`
-introduced the `k1s-core` distribution transition, and `1.0.0rc1` is the
+introduced the `k1s-core` distribution transition, and `1.0.0rc2` is the
 current PEP 440 release-candidate source identity. The alpha established the
-public compatibility contract in `public-contracts.md`; RC1 does not make
+public compatibility contract in `public-contracts.md`; RC2 does not make
 experimental surfaces stable or claim broad production readiness.
 
 The immutable local annotated `v1.0.0rc1` tag identifies the exact reviewed
-source checkpoint. That local tag is not evidence of package-index
-publication, deployment, live qualification, or stable promotion.
+prior source checkpoint. RC1 was not published, and that local tag is not
+evidence of package-index publication, deployment, live qualification, or
+stable promotion.
 
 The accepted implementation baseline completed source and synthetic checks for
 the isolated Q1 capsule, conductor, teardown, and replay contracts before this
 version transition. It did not complete live disposable-guest CRI/containerd,
-provider, deployment, or appliance qualification. The `1.0.0rc1` artifacts are
+provider, deployment, or appliance qualification. The `1.0.0rc2` artifacts are
 rebuilt from their own immutable commit and must pass deterministic two-lane,
 strict installed-artifact, and publication review gates. The K1 review at
 `c9178a5235b695784ed839f31901d476afdd6a98` qualifies the WorkerBee v1 wire and

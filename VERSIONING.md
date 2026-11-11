@@ -66,12 +66,16 @@ git push origin v0.1.0
 - `1.0.0a3` closed the alpha publication-contract corrections by verifying all
   seven exact publication subjects with one GitHub CLI invocation per subject
   in both index workflows.
-- `1.0.0rc1` is the current local release-candidate source checkpoint. The
+- `1.0.0rc1` is an immutable local release-candidate source checkpoint. The
   immutable local annotated `v1.0.0rc1` tag identifies that exact checkpoint;
-  it does not prove package-index publication, live WorkerBee/MCP or
-  CRI/containerd qualification, provider integration, deployment authority,
-  or stable promotion. Stable `1.0.0` remains gated by exact-candidate
-  publication and the outstanding combined live qualification gates.
+  RC1 was not published to a package index.
+- `1.0.0rc2` is the current release-candidate source identity. It separates the
+  qualified post-RC1 documentation and contract updates from RC1's immutable
+  source and artifact identity. It does not prove package-index publication,
+  live WorkerBee/MCP or CRI/containerd qualification, provider integration,
+  deployment authority, or stable promotion. Stable `1.0.0` remains gated by
+  exact-candidate publication and the outstanding combined live qualification
+  gates.
 - The WorkerBee profile evidence adapter is an experimental v1 wire contract
   within `k1s-core`; its `v1` schema identifier does not declare K1s 1.0 API
   stability. Unknown fields/versions fail closed. The K1 review at

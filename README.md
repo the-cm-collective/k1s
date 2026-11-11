@@ -21,10 +21,11 @@ WorkerBee evidence contract. It does not qualify live WorkerBee/MCP transport,
 CRI/containerd operation, provider or deployment integration, appliance behavior,
 or package publication; those remain explicit review gates.
 
-The latest stable release remains `0.1.7`. `1.0.0rc1` is the current local
-release-candidate source checkpoint, and the immutable local annotated
-`v1.0.0rc1` tag identifies that exact checkpoint. The tag is not evidence of a
-published package, deployment, live qualification, or publication authority.
+The latest stable release remains `0.1.7`. `1.0.0rc2` is the current
+release-candidate source identity undergoing exact artifact and package-index
+qualification. The immutable local annotated `v1.0.0rc1` tag identifies the
+prior source checkpoint; it is not evidence of a published package,
+deployment, live qualification, or publication authority.
 
 Production guidance:
 - Recommended now: source review, labs, staging, and explicitly scoped pilots only

@@ -25,7 +25,7 @@ from typing import NoReturn
 API_VERSION = "k1s.dev/q1-guest-stages/v1"
 CONDUCTOR_API_VERSION = "k1s.dev/q1-conductor/v1"
 SCHEMA_VERSION = 1
-EXPECTED_VERSION = "1.0.0rc1"
+EXPECTED_VERSION = "1.0.0rc2"
 MAX_BUNDLE_BYTES = 2 * 1024 * 1024 * 1024
 MAX_MEMBER_BYTES = 1024 * 1024 * 1024
 MAX_OUTPUT_BYTES = 4 * 1024 * 1024
@@ -404,7 +404,7 @@ def _stage_boot() -> dict[str, object]:
 def _stage_offline_install() -> dict[str, object]:
     root = WORK_ROOT / "offline-install"
     validator = PAYLOAD_ROOT / "payload/helpers/validate_installed_python_artifact.py"
-    wheel = PAYLOAD_ROOT / "payload/k1s/k1s_core-1.0.0rc1-py3-none-any.whl"
+    wheel = PAYLOAD_ROOT / "payload/k1s/k1s_core-1.0.0rc2-py3-none-any.whl"
     wheelhouse = PAYLOAD_ROOT / "payload/offline/wheels"
     lock = PAYLOAD_ROOT / "payload/offline/requirements-release.lock"
     output = _run(
@@ -456,7 +456,7 @@ def _stage_pure() -> dict[str, object]:
             _fail()
         checks.append((argv[2], raw))
     imported = _run(
-        (str(_installed_python()), "-c", "import ae; assert ae.__version__ == '1.0.0rc1'"),
+        (str(_installed_python()), "-c", "import ae; assert ae.__version__ == '1.0.0rc2'"),
         cwd=root,
         env=_clean_environment(root),
     )

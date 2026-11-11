@@ -59,7 +59,7 @@ QUALIFICATION_POSTURE = "source-validated/unqualified"
 CANDIDATE_VERSION = guest_image.CANDIDATE_VERSION
 SOURCE_DATE_EPOCH = guest_image.SOURCE_DATE_EPOCH
 DEFAULT_OUTPUT_PARENT = Path("/srv/storage/k1s")
-OUTPUT_RE = re.compile(r"qh5b-b2-1\.0\.0rc1-[0-9a-f]{8}-20[0-9]{6}T[0-9]{6}Z")
+OUTPUT_RE = re.compile(r"qh5b-b2-1\.0\.0rc2-[0-9a-f]{8}-20[0-9]{6}T[0-9]{6}Z")
 DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
 HEX_DIGEST_RE = re.compile(r"[0-9a-f]{64}")
 OBJECT_RE = re.compile(r"[0-9a-f]{40}")
@@ -658,11 +658,11 @@ def _validate_qh5a_authority(inputs: Mapping[str, object], *, wheelhouse_count: 
     expected_artifacts = {
         "sdist": (
             "acceptedSdist",
-            "dist/k1s_core-1.0.0rc1.tar.gz",
+            "dist/k1s_core-1.0.0rc2.tar.gz",
         ),
         "wheel": (
             "acceptedWheel",
-            "dist/k1s_core-1.0.0rc1-py3-none-any.whl",
+            "dist/k1s_core-1.0.0rc2-py3-none-any.whl",
         ),
     }
     for name, (input_name, filename) in expected_artifacts.items():
@@ -1886,9 +1886,9 @@ class LiveAcquisitionAdapter:
             crictl = self._crictl_stage(staging_root, work, roles)
 
             authority_targets = {
-                "acceptedSdist": ("q1/accepted/k1s_core-1.0.0rc1.tar.gz", "accepted-sdist", False),
+                "acceptedSdist": ("q1/accepted/k1s_core-1.0.0rc2.tar.gz", "accepted-sdist", False),
                 "acceptedWheel": (
-                    "q1/accepted/k1s_core-1.0.0rc1-py3-none-any.whl",
+                    "q1/accepted/k1s_core-1.0.0rc2-py3-none-any.whl",
                     "accepted-wheel",
                     False,
                 ),
