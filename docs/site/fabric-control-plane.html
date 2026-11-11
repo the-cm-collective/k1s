@@ -853,6 +853,15 @@
 ae fabric runtime-profile list --track baseline
 ae fabric runtime-profile show --track baseline --latest --json</code></pre>
 <p>Published profiles remain non-authoritative. Structural admission errors block publication; warning findings are stored and keep <code>promotion_ready=false</code>. Workloads may opt into advisory status evidence with <code>fabric.k1s.io/runtime-profile-track: baseline|quality|lora-adapter-smoke</code>. <code>ae status --json --wide</code> and <code>ae fabric runtime-profile advisory -f &lt;manifest&gt;</code> then include the latest stored profile for that track as advisory evidence only.</p>
+<h2 id="workerbee-complementary-evidence-boundary">WorkerBee Complementary Evidence Boundary</h2>
+<p>WorkerBee WBRR artifacts are external lifecycle evidence around a k1s environment, not k1s runtime API objects. k1s may reference WorkerBee application profiles, target-manager records, runtime probe packs, operation traces, export manifests, and static proof summaries during environment promotion or operator review, but those records do not replace controller-owned reconcile, scheduling, admission, or rollback decisions.</p>
+<p>The compatibility boundary is:</p>
+<ul>
+<li>WorkerBee owns project-scoped build, probe, export, security review, and evidence packaging contracts.</li>
+<li>k1s owns workload state, node state, fabric phase gates, reconcile decisions, and runtime admission behavior.</li>
+<li>Promotion workflows may attach WorkerBee evidence as advisory input or provenance, but must still pass k1s-native gates before changing runtime behavior.</li>
+<li>WorkerBee validators should not be duplicated into k1s runtime code. If k1s needs to consume a WorkerBee artifact, it should validate only the minimal envelope required for provenance and keep detailed contract validation in WorkerBee.</li>
+</ul>
 <h2 id="later-hyperon-path">Later Hyperon Path</h2>
 <p>Hyperon belongs at the control-plane and fabric layer, but in a bounded sequence:</p>
 <ul>
@@ -905,7 +914,7 @@ ae fabric runtime-profile show --track baseline --latest --json</code></pre>
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-06-05 21:36:21</span>
+        <span>Built 2026-11-11 05:12:15</span>
       </div>
     </footer>
     <script>
