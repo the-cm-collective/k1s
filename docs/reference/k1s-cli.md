@@ -13,6 +13,31 @@ unknown commands to `ae`.
 Run `k1s --help` or `k1s <command> --help` for the installed argument contract.
 Help and the read-only profile commands are safe without starting a runtime.
 
+## Install and inspect
+
+Install the distribution from an approved package index or exact reviewed
+artifact, then use the primary installed command:
+
+```text
+python -m pip install k1s-core
+k1s --help
+k1s profile list
+k1s profile doctor core
+k1s profile plan core
+k1s profile doctor edge-gateway
+k1s profile plan edge-gateway
+k1s profile doctor node
+k1s profile plan node
+```
+
+These commands are deterministic and non-mutating and report the
+`source-validated/unqualified` posture. They do not start a backend, prepare a
+host, or claim live WorkerBee, CRI/containerd, provider, or deployment
+qualification. The installed `ae` command remains the advanced
+compatibility and engineering surface. Make targets, `python -m ae.*`, and
+repository `scripts/`, `specs/`, `state/`, or `ops/` paths are source-checkout
+development material, not commands provided by the installed package.
+
 ## Application commands
 
 | Command | Purpose |

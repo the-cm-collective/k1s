@@ -740,13 +740,9 @@
       <a href="ingress-capability-test-sequence.html">Ingress Validation</a>
       <span class="nav-group-label" aria-hidden="true">API</span>
       <a href="http-api.html">HTTP API</a>
+      <a href="swagger/">Swagger (Static)</a>
       <a href="api-shim.html">API Shim</a>
       <a href="api-auth.html">API Auth</a>
-      <a href="/swagger" target="_blank" rel="noopener">Swagger</a>
-      <a href="/redoc" target="_blank" rel="noopener">ReDoc</a>
-      <span class="nav-group-label" aria-hidden="true">Live</span>
-      <a href="/dashboard" target="_blank" rel="noopener">Dashboard</a>
-      <a href="playground.html">Playground</a>
     </nav>
     <button id="theme-toggle" class="theme-fab" aria-label="Toggle theme" title="Toggle theme">
       <svg class="icon-sun" viewBox="0 -960 960 960" aria-hidden="true" focusable="false">
@@ -762,6 +758,18 @@
 <p>1. operate common application resources; and 2. inspect or explicitly operate versioned runtime-profile contracts.</p>
 <p>The broader <code>ae</code> command remains installed for controller, registry, TLS, backup, export, and other engineering surfaces. <code>k1s</code> does not silently proxy unknown commands to <code>ae</code>.</p>
 <p>Run <code>k1s --help</code> or <code>k1s &lt;command&gt; --help</code> for the installed argument contract. Help and the read-only profile commands are safe without starting a runtime.</p>
+<h2 id="install-and-inspect">Install and inspect</h2>
+<p>Install the distribution from an approved package index or exact reviewed artifact, then use the primary installed command:</p>
+<pre><code>python -m pip install k1s-core
+k1s --help
+k1s profile list
+k1s profile doctor core
+k1s profile plan core
+k1s profile doctor edge-gateway
+k1s profile plan edge-gateway
+k1s profile doctor node
+k1s profile plan node</code></pre>
+<p>These commands are deterministic and non-mutating and report the <code>source-validated/unqualified</code> posture. They do not start a backend, prepare a host, or claim live WorkerBee, CRI/containerd, provider, or deployment qualification. The installed <code>ae</code> command remains the advanced compatibility and engineering surface. Make targets, <code>python -m ae.*</code>, and repository <code>scripts/</code>, <code>specs/</code>, <code>state/</code>, or <code>ops/</code> paths are source-checkout development material, not commands provided by the installed package.</p>
 <h2 id="application-commands">Application commands</h2>
 <table><thead><tr><th>Command</th><th>Purpose</th></tr></thead><tbody><tr><td><code>k1s get RESOURCE [NAME]</code></td><td>List or inspect apps, deployments, workloads, pods, or services.</td></tr><tr><td><code>k1s describe REF</code></td><td>Describe an app/deployment reference.</td></tr><tr><td><code>k1s apply -f FILE</code></td><td>Apply one manifest file.</td></tr><tr><td><code>k1s rollout history REF</code></td><td>Show bounded rollout history.</td></tr><tr><td><code>k1s rollout undo REF [--to-revision N]</code></td><td>Restore a recorded revision.</td></tr><tr><td><code>k1s logs REF</code></td><td>Read workload logs, with optional follow, container, revision, tail, or time filters.</td></tr><tr><td><code>k1s events REF</code></td><td>Show recent workload events.</td></tr><tr><td><code>k1s delete REF [--purge]</code></td><td>Delete a workload; <code>--purge</code> also removes its events and revisions.</td></tr><tr><td><code>k1s scale REF --replicas N</code></td><td>Reconcile the requested replica count.</td></tr></tbody></table>
 <p>Application references accept <code>app/NAME</code>, <code>deployment/NAME</code>, or <code>NAME</code> where the command help permits them. Use <code>k1s get --help</code> for the accepted resource aliases. These commands use the same k1s state and reconciliation contracts as the corresponding <code>ae</code> surfaces.</p>
@@ -819,95 +827,10 @@ k1s profile migrate rollback LEGACY \
       <div class="container inner">
         <span>k1s Documentation</span>
         <span class="spacer"></span>
-        <button id="api-mode-toggle">API Mode</button>
-        <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-11-10 19:43:38</span>
+
+        <span>Built 2026-11-11 18:49:09</span>
       </div>
     </footer>
-    <script>
-      (function() {
-        var btn = document.getElementById('api-mode-toggle');
-        if (!btn) return;
-        function label() {
-          var mode = localStorage.getItem('docsApiMode') || 'proxy';
-          btn.textContent = (mode === 'direct') ? 'API Mode: Direct' : 'API Mode: Proxy';
-          var lab = document.getElementById('api-mode-label');
-          if (lab) {
-            if (mode === 'direct') {
-              var base = (window.DOCS_API_BASE||'').trim() || '(unset)';
-              lab.textContent = ' [' + base + ']';
-            } else {
-              lab.textContent = ' (proxy)';
-            }
-          }
-        }
-        btn.addEventListener('click', function() {
-          var cur = localStorage.getItem('docsApiMode') || 'proxy';
-          var next = (cur === 'direct') ? 'proxy' : 'direct';
-          localStorage.setItem('docsApiMode', next);
-          label();
-          if (location.pathname.endsWith('playground.html')) location.reload();
-        });
-        label();
-      })();
-    </script>
-    <script>
-      (function() {
-        function hideLinks(match) {
-          var links = document.querySelectorAll('a[href]');
-          links.forEach(function(a) {
-            var href = a.getAttribute('href') || '';
-            if (match(href)) { a.style.display = 'none'; }
-          });
-        }
-        function rewriteDashboardLinks(target) {
-          if (!target) return;
-          var links = document.querySelectorAll('a[href]');
-          links.forEach(function(a) {
-            var href = a.getAttribute('href') || '';
-            if (href.indexOf('/dashboard') === 0) {
-              a.setAttribute('href', target);
-              if (!a.getAttribute('target')) {
-                a.setAttribute('target', '_blank');
-                a.setAttribute('rel', 'noopener');
-              }
-            }
-          });
-        }
-        function disablePlaygroundPage() {
-          var path = (location && location.pathname) ? location.pathname : '';
-          if (!/playground/i.test(path)) return;
-          var container = document.querySelector('.container');
-          if (container) container.style.display = 'none';
-          var msg = document.createElement('div');
-          msg.style.maxWidth = '960px';
-          msg.style.margin = '32px auto';
-          msg.style.padding = '16px 20px';
-          msg.style.border = '1px solid var(--border)';
-          msg.style.borderRadius = '12px';
-          msg.style.background = 'var(--k1s-panel)';
-          msg.style.color = 'var(--k1s-text)';
-          msg.innerHTML = '<h2 style="margin:0 0 8px">Playground disabled</h2>' +
-            '<p style="margin:0;color:var(--k1s-text-muted)">This environment has disabled the interactive playground. Enable AE_PLAYGROUND=1 on the controller to re-enable it.</p>';
-          document.body.insertBefore(msg, document.body.firstChild);
-        }
-        fetch('/ui/features', { credentials: 'same-origin' })
-          .then(function(r) { return r.ok ? r.json() : null; })
-          .then(function(f) {
-            if (!f) return;
-            if (f.dashboard === false) {
-              hideLinks(function(h) { return h.indexOf('/dashboard') !== -1; });
-            } else {
-              var dashUrl = (window.DOCS_DASHBOARD_URL || '').trim();
-              rewriteDashboardLinks(dashUrl);
-            }
-            if (f.playground === false) {
-              hideLinks(function(h) { return h.indexOf('playground') !== -1; });
-              disablePlaygroundPage();
-            }
-          })
-          .catch(function() {});
-      })();
-    </script>
+
   </body>
 </html>

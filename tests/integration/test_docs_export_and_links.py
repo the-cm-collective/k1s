@@ -55,6 +55,7 @@ def test_docs_export_builds_expected_pages_and_resolves_relative_links(tmp_path:
         "start-here.html",
         "overview.html",
         "k1s-cli.html",
+        "multinode-lab.html",
         "profile-lifecycle.html",
         "public-contracts.html",
         "examples.html",
@@ -92,6 +93,14 @@ def test_docs_export_builds_expected_pages_and_resolves_relative_links(tmp_path:
 
     assert not failures, "\n".join(failures[:50])
 
+    for page_name in ("k1s-cli.html", "multinode-lab.html"):
+        page = (out_dir / page_name).read_text(encoding="utf-8")
+        assert "python -m pip install k1s-core" in page
+        assert "k1s profile doctor core" in page
+        assert "k1s profile plan edge-gateway" in page
+        assert "k1s profile plan node" in page
+        assert "source-validated" in page
+
     rendered = "\n".join(path.read_text(encoding="utf-8") for path in html_files)
     assert "codeberg.org" not in rendered.lower()
     assert "Mirror (Codeberg)" not in rendered
@@ -108,6 +117,13 @@ def test_docs_export_builds_expected_pages_and_resolves_relative_links(tmp_path:
     assert (wiki_dir / "Home.md").exists()
     assert (wiki_dir / "_Sidebar.md").exists()
     assert not (wiki_dir / "playground.md").exists()
+    for page_name in ("k1s-cli.md", "multinode-lab.md"):
+        page = (wiki_dir / page_name).read_text(encoding="utf-8")
+        assert "python -m pip install k1s-core" in page
+        assert "k1s profile doctor core" in page
+        assert "k1s profile plan edge-gateway" in page
+        assert "k1s profile plan node" in page
+        assert "source-validated" in page
 
     markdown = "\n".join(path.read_text(encoding="utf-8") for path in sorted(wiki_dir.glob("*.md")))
     assert not re.search(r"\]\(/(?:swagger|redoc|openapi|dashboard|playground)", markdown)

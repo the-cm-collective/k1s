@@ -22,8 +22,9 @@ CRI/containerd operation, provider or deployment integration, appliance behavior
 or package publication; those remain explicit review gates.
 
 The latest stable release remains `0.1.7`. `1.0.0rc1` is the current local
-release-candidate source checkpoint; it is not a release tag, published package,
-or grant of publication authority.
+release-candidate source checkpoint, and the immutable local annotated
+`v1.0.0rc1` tag identifies that exact checkpoint. The tag is not evidence of a
+published package, deployment, live qualification, or publication authority.
 
 Production guidance:
 - Recommended now: source review, labs, staging, and explicitly scoped pilots only
@@ -75,18 +76,47 @@ Dashboard:
 Playground:
 ![Playground](https://raw.githubusercontent.com/the-cm-collective/k1s/main/media/docs.home.arpa_8443_playground.html.png)
 
-## Quickstart
+## Quickstart: installed package contract
 
-1) Install (editable for dev):
+Install the public Python distribution from an approved package index or exact
+reviewed artifact:
+
+```
+python -m pip install k1s-core
+k1s --help
+k1s profile list
+k1s profile doctor core
+k1s profile plan core
+k1s profile doctor edge-gateway
+k1s profile plan edge-gateway
+k1s profile doctor node
+k1s profile plan node
+```
+
+The distribution name is `k1s-core`; the runtime package remains importable as
+`ae`. `k1s` is the primary installed command. The historical `ae` command is
+also installed as the advanced compatibility and engineering surface. These
+profile commands are deterministic and non-mutating. They prove the installed
+source contract only; they do not start a runtime, prepare a host, or qualify
+live WorkerBee, CRI/containerd, provider, or deployment behavior.
+
+See `docs/reference/python-distribution.md` and
+`docs/reference/public-contracts.md` for the 1.0 pre-release compatibility
+policy.
+
+### Contributor and source-checkout development
+
+The remaining quickstart steps are repository-development instructions. Make
+targets, `python -m ae.*`, and paths under `scripts/`, `specs/`, `state/`, and
+`ops/` require a source checkout and are not commands supplied by a
+`pip install k1s-core` environment. Host tools, runtimes, and `sudo` commands
+are separately managed prerequisites.
+
+Install an editable checkout for development:
 
 ```
 python -m pip install -e .[dev]
 ```
-
-Published Python artifacts use the distribution name `k1s-core`. The runtime
-package remains importable as `ae`, and the `k1s` and historical `ae*` command
-entry points remain available. See `docs/reference/python-distribution.md` and
-`docs/reference/public-contracts.md` for the 1.0 pre-release compatibility policy.
 
 Optional: add file-watching support for instant reconciles on spec changes:
 

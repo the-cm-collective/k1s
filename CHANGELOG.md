@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Documentation
+- Distinguished the installed `k1s-core` and `k1s profile` inspection path
+  from source-checkout Make targets, module invocations, repository helpers,
+  and host prerequisites without claiming live runtime qualification.
+- Recorded that the immutable local annotated `v1.0.0rc1` tag identifies the
+  reviewed source checkpoint but does not prove publication, deployment, or
+  live qualification.
+
 ## 1.0.0rc1 - 2026-11-11
 
 ### Changed

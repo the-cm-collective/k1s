@@ -5,6 +5,31 @@ This distribution identity matches the K1s core runtime consumed by local
 WorkerBee wheelhouses. The rename does not rename the runtime's established
 Python or command surfaces.
 
+## Install and inspect
+
+Install `k1s-core` from an approved package index or exact reviewed artifact:
+
+```text
+python -m pip install k1s-core
+k1s --help
+k1s profile list
+k1s profile doctor core
+k1s profile plan core
+k1s profile doctor edge-gateway
+k1s profile plan edge-gateway
+k1s profile doctor node
+k1s profile plan node
+```
+
+`k1s` is the primary installed package command. `ae` remains the installed
+advanced compatibility and engineering surface. The profile inspection above
+is deterministic, non-mutating, and reports the
+`source-validated/unqualified` posture; it does not start a runtime, prepare a
+host, or establish live WorkerBee, CRI/containerd, provider, or deployment
+qualification. Make targets, `python -m ae.*`, and repository paths under
+`scripts/`, `specs/`, `state/`, or `ops/` are source-checkout development
+material rather than wheel-provided commands.
+
 ## Preserved compatibility surfaces
 
 - Python imports remain under `ae`, including `import ae` and all
@@ -124,6 +149,10 @@ introduced the `k1s-core` distribution transition, and `1.0.0rc1` is the
 current PEP 440 release-candidate source identity. The alpha established the
 public compatibility contract in `public-contracts.md`; RC1 does not make
 experimental surfaces stable or claim broad production readiness.
+
+The immutable local annotated `v1.0.0rc1` tag identifies the exact reviewed
+source checkpoint. That local tag is not evidence of package-index
+publication, deployment, live qualification, or stable promotion.
 
 The accepted implementation baseline completed source and synthetic checks for
 the isolated Q1 capsule, conductor, teardown, and replay contracts before this

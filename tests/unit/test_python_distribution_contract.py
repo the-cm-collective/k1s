@@ -256,10 +256,14 @@ def test_ci_artifact_job_is_nonpublishing_and_uses_only_the_helper() -> None:
 
 
 def test_release_documentation_records_v1_alpha_compatibility() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
     versioning = (ROOT / "VERSIONING.md").read_text(encoding="utf-8")
     distribution = (ROOT / "docs" / "reference" / "python-distribution.md").read_text(
         encoding="utf-8"
     )
+    readme_words = " ".join(readme.split())
+    versioning_words = " ".join(versioning.split())
+    distribution_words = " ".join(distribution.split())
     assert "0.1.8a1" in versioning
     assert "1.0.0a3" in versioning
     assert "1.0.0rc1" in versioning
@@ -267,6 +271,14 @@ def test_release_documentation_records_v1_alpha_compatibility() -> None:
     assert "1.0 alpha compatibility contract" in versioning
     assert "Python imports remain under `ae`" in distribution
     assert "current PEP 440 release-candidate source identity" in distribution
+    assert "python -m pip install k1s-core" in readme
+    assert "python -m pip install k1s-core" in distribution
+    assert "immutable local annotated `v1.0.0rc1` tag" in readme_words
+    assert "immutable local annotated `v1.0.0rc1` tag" in versioning_words
+    assert "immutable local annotated `v1.0.0rc1` tag" in distribution_words
+    assert "not evidence of a published package" in readme_words
+    assert "does not prove package-index publication" in versioning_words
+    assert "not evidence of package-index" in distribution_words
     assert "Production never rebuilds" in distribution
     assert PROTECTED_PATHS.isdisjoint(distribution.splitlines())
 
