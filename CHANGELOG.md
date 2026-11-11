@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Documentation
+- Clarified that the pre-RC1 review branch and annotated marker are non-release
+  references and do not change the package version or grant publication
+  authority.
+- Distinguished the locally qualified WorkerBee v1 wire/source/synthetic
+  contract from pending live MCP acquisition, provider identity, retained W4,
+  disposable-guest runtime, deployment, and publication gates.
+
 ## 1.0.0a3 - 2026-11-10
 
 ### Fixed

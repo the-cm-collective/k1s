@@ -186,7 +186,26 @@ k1s get services
 k1s describe app/echo
 k1s logs app/echo --follow --tail 100
 ```
-Note: `k1s` is a thin wrapper over `ae` for common get/describe/logs/rollout/scale/delete flows. For the full surface (plan/export/registry/tls/nodes/volumes/backup), use `ae` directly.
+`k1s` also owns the installed runtime-profile contract. Read-only catalog and
+plan commands are safe without a running controller:
+
+```text
+k1s profile list
+k1s profile doctor core
+k1s profile plan edge-gateway --output json
+```
+
+Canonical `local`, `core`, `edge-gateway`, and `node` roles have explicit
+portable lifecycle, foreground run, bounded logs, confirmed deletion,
+bootstrap, migration, and strict-CRI host-transaction surfaces. Start with the
+[k1s CLI reference](k1s-cli.html); use the
+[profile lifecycle reference](profile-lifecycle.html) before any
+stateful profile action.
+
+Note: `k1s` is a compact interface for common
+get/describe/apply/logs/events/rollout/scale/delete flows and the installed
+profile contract. For the broader plan/export/registry/TLS/nodes/volumes/backup
+surface, use `ae` directly.
 
 Optional: start the Kubernetes API shim for kubectl/helm parity
 ```

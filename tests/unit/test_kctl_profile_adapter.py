@@ -167,6 +167,141 @@ def test_contract_resource_is_exact_ordered_and_immutable() -> None:
         contract.operations[0].source_kind = "changed"  # type: ignore[misc]
 
 
+def test_wp01_same_runtime_consumer_fixture_covers_all_six_operations() -> None:
+    class SameRuntimeProvider:
+        def __init__(self) -> None:
+            self.acquired: list[str] = []
+
+        def acquire(
+            self, operation: str
+        ) -> tuple[dict[str, object], int, dict[str, object] | None]:
+            if operation == "bootstrap":
+                raise AssertionError("bootstrap must be supplied as a selected projection")
+            self.acquired.append(operation)
+            if operation == "list":
+                return profile_catalog_payload(), 0, None
+            if operation == "doctor":
+                source, exit_code = _doctor("core")
+                return source, exit_code, None
+            if operation == "plan":
+                return profile_plan_payload("node"), 0, None
+            if operation == "status":
+                return _status(), 0, None
+            if operation == "logs":
+                return _logs(), 0, None
+            raise AssertionError(f"unexpected operation: {operation}")
+
+        def project(
+            self,
+            operation: str,
+            *,
+            selected_bootstrap: dict[str, object] | None = None,
+        ) -> tuple[dict[str, object], str]:
+            if operation == "bootstrap":
+                if selected_bootstrap is None:
+                    raise AssertionError("bootstrap projection must already be selected")
+                source, exit_code, observation = selected_bootstrap, 0, _observation()
+            else:
+                if selected_bootstrap is not None:
+                    raise AssertionError("selected bootstrap is operation-specific")
+                source, exit_code, observation = self.acquire(operation)
+            evidence = adapt_workerbee_profile_evidence(
+                operation,
+                source,
+                source_exit_code=exit_code,
+                node_observation=observation,
+            )
+            rendered = render_workerbee_profile_evidence_json(evidence)
+            assert verify_workerbee_profile_evidence(rendered) == evidence
+            return evidence, rendered
+
+    provider = SameRuntimeProvider()
+    contract = load_workerbee_adapter_contract()
+    evidence_by_operation: dict[str, dict[str, object]] = {}
+    canonical_by_operation: dict[str, str] = {}
+    for descriptor in contract.operations:
+        evidence, rendered = provider.project(
+            descriptor.name,
+            selected_bootstrap=_bootstrap() if descriptor.name == "bootstrap" else None,
+        )
+        evidence_by_operation[descriptor.name] = evidence
+        canonical_by_operation[descriptor.name] = rendered
+
+    assert provider.acquired == ["list", "doctor", "plan", "status", "logs"]
+    assert list(evidence_by_operation) == [
+        "list",
+        "doctor",
+        "plan",
+        "status",
+        "logs",
+        "bootstrap",
+    ]
+    assert evidence_by_operation["logs"]["payload"] == {
+        "component": "node-agent",
+        "contentPolicy": "omitted",
+        "lineCount": 2,
+        "profile": "node",
+        "runRef": "sha256:068b3d1b8fde45ba6ad811be983a07a60f15ad3e539851dbc3851ccb1f35a7ce",
+        "sourceTruncated": False,
+    }
+    assert evidence_by_operation["bootstrap"]["nodeIdentity"] == {
+        "generation": 11,
+        "generationProvenance": "k1s-controller-lease",
+        "identityMode": "explicit",
+        "identityVersion": 1,
+        "nodeId": "node-a",
+    }
+
+    retained_w4 = []
+    for operation, evidence in evidence_by_operation.items():
+        canonical = canonical_by_operation[operation]
+        retained_w4.append(
+            {
+                "canonicalEvidence": canonical,
+                "evidenceId": evidence["evidenceId"],
+                "evidenceSha256": "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+                "operation": operation,
+                "provenance": evidence["provenance"],
+            }
+        )
+    assert all(
+        set(item)
+        == {
+            "canonicalEvidence",
+            "evidenceId",
+            "evidenceSha256",
+            "operation",
+            "provenance",
+        }
+        for item in retained_w4
+    )
+    contract_raw = (
+        Path(__file__).resolve().parents[2] / "src/ae/resources/profiles/workerbee-adapter-v1.json"
+    ).read_bytes()
+    retained_w4_set = {
+        "adapterContract": contract_raw.decode("utf-8"),
+        "adapterContractSha256": "sha256:" + hashlib.sha256(contract_raw).hexdigest(),
+        "evidence": retained_w4,
+    }
+    assert {
+        item["provenance"]["distributionVersion"]  # type: ignore[index]
+        for item in retained_w4
+    } == {"1.0.0a3"}
+    retained_text = json.dumps(retained_w4_set, ensure_ascii=False, sort_keys=True)
+    for forbidden in (
+        "private value",
+        "must-not-escape",
+        "controller.example",
+        "node.example",
+        "127.0.0.1",
+        "9109",
+        "r1-0123456789abcdef0123456789abcdef",
+        "credential",
+        "privateBootstrapDigest",
+    ):
+        assert forbidden not in retained_text
+
+
 @pytest.mark.parametrize(
     ("target", "replacement"),
     [

@@ -845,6 +845,13 @@
 <li><code>k1s describe app/echo</code></li>
 <li><code>k1s logs app/echo --follow --tail 100</code></li>
 </ul>
+<p>The installed profile catalog is available without starting a runtime:</p>
+<ul>
+<li><code>k1s profile list</code></li>
+<li><code>k1s profile doctor core</code></li>
+<li><code>k1s profile plan edge-gateway --output json</code></li>
+</ul>
+<p>Stateful profile commands are explicit, exact-owner operations. Read the <a href="k1s-cli.html">k1s CLI reference</a> and <a href="profile-lifecycle.html">profile lifecycle contract</a> before using them.</p>
 <p>5) API and metrics</p>
 <ul>
 <li>JSON and metrics: <code>curl :9108/status</code>, <code>curl :9108/metrics</code></li>
@@ -903,7 +910,7 @@
         <span class="spacer"></span>
         <button id="api-mode-toggle">API Mode</button>
         <span id="api-mode-label" style="opacity:.8;margin-left:.5rem"></span>
-        <span>Built 2026-06-05 21:36:21</span>
+        <span>Built 2026-11-10 19:43:38</span>
       </div>
     </footer>
     <script>
