@@ -2,6 +2,9 @@
 
 # k1s Minimal Application Engine
 
+[![PyPI](https://img.shields.io/pypi/v/k1s-core.svg?label=PyPI)](https://pypi.org/project/k1s-core/)
+[![Python](https://img.shields.io/pypi/pyversions/k1s-core.svg)](https://pypi.org/project/k1s-core/)
+
 k1s is a small, readable, Kubernetes-like orchestration engine built for distributed compute across messy reality: NAT/CGNAT, roaming nodes, intermittent links, heterogeneous sites, and federated clouds.
 
 The goal is to make private, self-hosted, federated compute feasible without surrendering control to a single vendor or central authority. k1s is privacy-first, consent-first, and secure-by-default while staying understandable end-to-end (`spec -> reconcile -> runtime -> networking`).
